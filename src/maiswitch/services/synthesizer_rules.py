@@ -216,7 +216,7 @@ def build_rule_draft(
             if short_quote and short_quote not in base:
                 base = f"{base}，当时说道「{short_quote}」"
 
-        line = f"在{where}{base}" if not base.startswith("在") else base
+        line = base if where in base[: len(where) + 4] else f"在{where}{base}"
         if line not in body_lines:
             body_lines.append(line)
         if ev.visibility != "private":
@@ -225,7 +225,7 @@ def build_rule_draft(
             if line not in public_lines:
                 public_lines.append(line)
 
-        if ev.actor_role == "self":
+        if ev.actor_role == "self" and ev.kind in ("speech", "promise_update", "browsed"):
             _extract_rule_anchors(ev, anchors)
         _extract_rule_topics(ev, topics, known_external_ids)
 
@@ -259,7 +259,7 @@ def _extract_rule_anchors(ev: ExperienceEventRow, out: List[AnchorCandidate]) ->
         return
 
     text = f"{ev.summary} {ev.verbatim}".strip()
-    if ev.verbatim.strip() and any(kw in text for kw in _PROMISE_KEYWORDS):
+    if ev.kind == "speech" and ev.verbatim.strip() and any(kw in text for kw in _PROMISE_KEYWORDS):
         content = str(meta.get("promise_content") or ev.summary or ev.verbatim).strip()[:100]
         out.append(
             AnchorCandidate(

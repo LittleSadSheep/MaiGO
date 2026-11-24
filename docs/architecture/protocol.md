@@ -116,7 +116,7 @@ sequenceDiagram
 - 开播签出：将 `stable_brief` 写入规划器背景段，把 `topic_cards` 注入话题池 `TopicDeck`，并将 `person_directory` 缓存在内存中供弹幕和游戏玩家发言零延迟匹配，同时遵循“关联记忆但不在公开场合点破未公开马甲”的提示约束。
 - 场中与下播：心跳回写消费过的话题 ID；下播整理完成后调用 `checkin` 回传本场汇总与承诺状态。开关关闭或服务离线时直接退回单机流程。
 
-### 4.2 `MaiBot` 适配插件（`MaiBot-Switch-Adapter`）
+### 4.2 `MaiBot` 适配插件（`MaiBot-MaiGO-Adapter`）
 
 独立插件挂载消息钩子，不侵入 `MaiBot` 主仓库代码：
 

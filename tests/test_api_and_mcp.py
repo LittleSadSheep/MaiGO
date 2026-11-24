@@ -12,8 +12,8 @@ import httpx2
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from maiswitch.api import create_app
-from maiswitch.config import SwitchConfig, SynthesizerConfig
+from maigo.api import create_app
+from maigo.config import MaiGOConfig, SynthesizerConfig
 
 
 def _ms(year: int, month: int, day: int, hour: int, minute: int = 0) -> int:
@@ -31,7 +31,7 @@ class MutableClock:
 
 async def test_auth_events_context_and_sessions_flow(tmp_path) -> None:
     clock = MutableClock(_ms(2026, 11, 24, 20, 0))
-    cfg = SwitchConfig(
+    cfg = MaiGOConfig(
         db_path=str(tmp_path / "api.sqlite3"),
         auth_token="secret-demo-token",
         synthesizer=SynthesizerConfig(auto_background=False),
@@ -242,7 +242,7 @@ async def test_auth_events_context_and_sessions_flow(tmp_path) -> None:
 
 async def test_mcp_streamable_http_tools_and_dashboard_routes(tmp_path) -> None:
     clock = MutableClock(_ms(2026, 11, 24, 20, 0))
-    cfg = SwitchConfig(
+    cfg = MaiGOConfig(
         db_path=str(tmp_path / "mcp.sqlite3"),
         auth_token="mcp-token",
         synthesizer=SynthesizerConfig(auto_background=False),
@@ -357,14 +357,14 @@ async def test_mcp_streamable_http_tools_and_dashboard_routes(tmp_path) -> None:
                     await session.initialize()
                     tools_res = await session.list_tools()
                     names = {t.name for t in tools_res.tools}
-                    assert names == {"switch_recall_life", "switch_lookup_person", "switch_resolve_promise"}
+                    assert names == {"maigo_recall_life", "maigo_lookup_person", "maigo_resolve_promise"}
 
-                    recall_res = await session.call_tool("switch_recall_life", {"query": "像素", "days": 7})
+                    recall_res = await session.call_tool("maigo_recall_life", {"query": "像素", "days": 7})
                     assert not recall_res.is_error
                     assert "像素风动画" in recall_res.content[0].text
 
                     lookup_res = await session.call_tool(
-                        "switch_lookup_person",
+                        "maigo_lookup_person",
                         {"platform": "qq", "external_id": "10001", "target_visibility": "public"},
                     )
                     assert not lookup_res.is_error
@@ -372,7 +372,7 @@ async def test_mcp_streamable_http_tools_and_dashboard_routes(tmp_path) -> None:
                     assert "10001" not in lookup_res.content[0].text
 
                     resolve_res = await session.call_tool(
-                        "switch_resolve_promise",
+                        "maigo_resolve_promise",
                         {"anchor_id": anchor_id, "status": "closed", "evidence": "B站动态已发出"},
                     )
                     assert not resolve_res.is_error
@@ -386,7 +386,7 @@ async def test_real_uvicorn_sse_stream(tmp_path) -> None:
     port = sock.getsockname()[1]
     sock.close()
 
-    cfg = SwitchConfig(
+    cfg = MaiGOConfig(
         host="127.0.0.1",
         port=port,
         db_path=str(tmp_path / "sse.sqlite3"),

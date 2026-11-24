@@ -12,8 +12,8 @@ from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 import uvicorn
 
-from maiswitch.api import create_app
-from maiswitch.config import SwitchConfig, SynthesizerConfig
+from maigo.api import create_app
+from maigo.config import MaiGOConfig, SynthesizerConfig
 
 _FAKE_QQ_ID = "10001"
 _FAKE_BILI_ID = "20002"
@@ -57,7 +57,7 @@ async def test_e2e_maimai_complete_day_five_criteria(tmp_path) -> None:
     # 时钟起点设在 19:30，保证下午时段（12-18 点）成为已过去可封存时段，晚间（18-23 点）仍处开放状态
     clock = _MutableClock(_ms(2026, 11, 24, 19, 30))
     port = _free_port()
-    cfg = SwitchConfig(
+    cfg = MaiGOConfig(
         host="127.0.0.1",
         port=port,
         db_path=str(tmp_path / "e2e_day.sqlite3"),
@@ -400,7 +400,7 @@ async def test_e2e_maimai_complete_day_five_criteria(tmp_path) -> None:
             assert "没有找到" in recall_secret.json()["text"]
             assert "保密代号" not in recall_secret.json()["text"]
 
-        # 真实 StreamableHTTP 连接同端口 /mcp 调用 switch_recall_life 与 switch_lookup_person
+        # 真实 StreamableHTTP 连接同端口 /mcp 调用 maigo_recall_life 与 maigo_lookup_person
         async with httpx.AsyncClient(headers=headers, timeout=15.0) as mcp_http:
             async with streamable_http_client(
                 f"{base_url}/mcp",
@@ -410,7 +410,7 @@ async def test_e2e_maimai_complete_day_five_criteria(tmp_path) -> None:
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
                     mcp_recall = await session.call_tool(
-                        "switch_recall_life",
+                        "maigo_recall_life",
                         {"query": "灯塔", "days": 7, "target_visibility": "group"},
                     )
                     assert not mcp_recall.is_error
@@ -419,7 +419,7 @@ async def test_e2e_maimai_complete_day_five_criteria(tmp_path) -> None:
                     _assert_no_secret_or_raw_ids(recall_txt)
 
                     mcp_person = await session.call_tool(
-                        "switch_lookup_person",
+                        "maigo_lookup_person",
                         {"platform": "bilibili", "external_id": _FAKE_BILI_ID, "target_visibility": "group"},
                     )
                     assert not mcp_person.is_error

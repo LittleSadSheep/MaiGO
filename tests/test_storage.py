@@ -5,16 +5,16 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from maiswitch.config import load_config
-from maiswitch.storage import (
+from maigo.config import load_config
+from maigo.storage import (
     EXPECTED_TABLES,
     SCHEMA_VERSION,
     ActorRef,
     NewExperienceEvent,
-    SwitchDatabase,
+    MaiGODatabase,
     apply_migrations,
 )
-from maiswitch.storage.repos import (
+from maigo.storage.repos import (
     DailyChronicleRepo,
     ExperienceEventRepo,
     PersonaAnchorRepo,
@@ -43,9 +43,9 @@ def test_config_env_overrides(tmp_path: Path) -> None:
     cfg = load_config(
         toml_file,
         env={
-            "MAISWITCH_PORT": "8769",
-            "MAISWITCH_AUTH_TOKEN": "demo-token",
-            "MAISWITCH_SYNTH_BATCH_THRESHOLD": "5",
+            "MAIGO_PORT": "8769",
+            "MAIGO_AUTH_TOKEN": "demo-token",
+            "MAIGO_SYNTH_BATCH_THRESHOLD": "5",
         },
     )
     assert cfg.port == 8769
@@ -55,8 +55,8 @@ def test_config_env_overrides(tmp_path: Path) -> None:
 
 async def test_migrations_idempotent_and_wal(tmp_path: Path) -> None:
     clock = FakeClock()
-    db_file = tmp_path / "switch.sqlite3"
-    db = SwitchDatabase(db_file, clock_ms=clock)
+    db_file = tmp_path / "maigo.sqlite3"
+    db = MaiGODatabase(db_file, clock_ms=clock)
     await db.initialize()
 
     def _inspect(conn: sqlite3.Connection) -> tuple[str, list[str], int]:
@@ -82,7 +82,7 @@ async def test_migrations_idempotent_and_wal(tmp_path: Path) -> None:
 
 async def test_event_idempotency_and_fts_search(tmp_path: Path) -> None:
     clock = FakeClock()
-    db = SwitchDatabase(tmp_path / "events.sqlite3", clock_ms=clock)
+    db = MaiGODatabase(tmp_path / "events.sqlite3", clock_ms=clock)
     await db.initialize()
     event_repo = ExperienceEventRepo(clock_ms=clock)
 
@@ -135,7 +135,7 @@ async def test_event_idempotency_and_fts_search(tmp_path: Path) -> None:
 
 async def test_cascade_delete_and_other_repos(tmp_path: Path) -> None:
     clock = FakeClock()
-    db = SwitchDatabase(tmp_path / "repos.sqlite3", clock_ms=clock)
+    db = MaiGODatabase(tmp_path / "repos.sqlite3", clock_ms=clock)
     await db.initialize()
     person_repo = PersonRepo(clock_ms=clock)
     chronicle_repo = DailyChronicleRepo(clock_ms=clock)

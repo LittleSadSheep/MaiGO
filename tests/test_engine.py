@@ -6,16 +6,16 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
-from maiswitch.config import SynthesizerConfig
-from maiswitch.services import (
+from maigo.config import SynthesizerConfig
+from maigo.services import (
     AnchorCandidate,
     ChronicleSynthesizer,
     IdentityService,
     SlotSynthesisDraft,
     ViewProjector,
 )
-from maiswitch.storage import ActorRef, ExperienceEventRow, NewExperienceEvent, SwitchDatabase
-from maiswitch.storage.repos import ExperienceEventRepo
+from maigo.storage import ActorRef, ExperienceEventRow, NewExperienceEvent, MaiGODatabase
+from maigo.storage.repos import ExperienceEventRepo
 
 
 def _ms(year: int, month: int, day: int, hour: int, minute: int = 0) -> int:
@@ -66,7 +66,7 @@ class MaliciousLLMClient:
 
 async def test_identity_explicit_bind_token_and_no_auto_merge(tmp_path) -> None:
     clock = MutableClock(_ms(2026, 11, 24, 15, 0))
-    db = SwitchDatabase(tmp_path / "id.sqlite3", clock_ms=clock)
+    db = MaiGODatabase(tmp_path / "id.sqlite3", clock_ms=clock)
     await db.initialize()
     identity = IdentityService(db, identity_salt="test-salt", clock_ms=clock)
     event_repo = ExperienceEventRepo(clock_ms=clock)
@@ -122,7 +122,7 @@ async def test_identity_explicit_bind_token_and_no_auto_merge(tmp_path) -> None:
 
 async def test_poison_guard_blocks_peer_anchors(tmp_path) -> None:
     clock = MutableClock(_ms(2026, 11, 24, 15, 0))
-    db = SwitchDatabase(tmp_path / "poison.sqlite3", clock_ms=clock)
+    db = MaiGODatabase(tmp_path / "poison.sqlite3", clock_ms=clock)
     await db.initialize()
     identity = IdentityService(db, clock_ms=clock)
     event_repo = ExperienceEventRepo(clock_ms=clock)
@@ -176,7 +176,7 @@ async def test_poison_guard_blocks_peer_anchors(tmp_path) -> None:
 async def test_visibility_isolation_sanitization_and_stable_brief_cache(tmp_path) -> None:
     # 设定当前时钟在晚上 20:00，让下午 15:00 的事件自动封存进慢层
     clock = MutableClock(_ms(2026, 11, 24, 20, 0))
-    db = SwitchDatabase(tmp_path / "proj.sqlite3", clock_ms=clock)
+    db = MaiGODatabase(tmp_path / "proj.sqlite3", clock_ms=clock)
     await db.initialize()
     identity = IdentityService(db, clock_ms=clock)
     event_repo = ExperienceEventRepo(clock_ms=clock)

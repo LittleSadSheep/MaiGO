@@ -2,8 +2,8 @@
   <div class="app-shell">
     <header class="topbar">
       <div class="brand">
-        <h1>MaiSwitch</h1>
-        <span>24h 跨端记忆与生活流中心交换台</span>
+        <h1>MaiGO</h1>
+        <span>24h 跨端记忆与生活流中心（迷子不再走散）</span>
       </div>
 
       <nav class="nav-tabs">

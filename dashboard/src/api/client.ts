@@ -1,6 +1,6 @@
-/** MaiSwitch 看板前端 HTTP API 轻量客户端。 */
+/** MaiGO 看板前端 HTTP API 轻量客户端。 */
 
-const TOKEN_STORAGE_KEY = "maiswitch_auth_token";
+const TOKEN_STORAGE_KEY = "maigo_auth_token";
 
 export function getStoredToken(): string {
   return localStorage.getItem(TOKEN_STORAGE_KEY) || "";

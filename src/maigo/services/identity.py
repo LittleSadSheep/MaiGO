@@ -84,6 +84,15 @@ class IdentityService:
         raw = f"{self._salt}:{platform.strip().lower()}:{external_id.strip()}".encode("utf-8")
         return hashlib.sha256(raw).hexdigest()
 
+    def has_forgotten_actor_sync(self, conn: sqlite3.Connection, actors: Sequence[ActorRef]) -> bool:
+        """检查参与者列表是否命中任何已请求遗忘的外部账号。"""
+        for actor in actors:
+            if not actor.platform or not actor.external_id:
+                continue
+            if self._persons.is_forgotten_hash(conn, self.hash_identity(actor.platform, actor.external_id)):
+                return True
+        return False
+
     async def create_person(
         self,
         *,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import uuid
 from dataclasses import asdict
@@ -19,15 +20,26 @@ from maigo.api.schemas import (
     ForgetIdentityIn,
     IdentityBindIn,
     IdentityUnbindIn,
+    LifeArcCreateIn,
+    LifeArcPatchIn,
     PersonCreateIn,
+    QuickNoteIn,
     TopicCreateIn,
     TopicPatchIn,
 )
 from maigo.api.state import CtxDep, require_auth
+from maigo.services.sanitizer import normalize_visibility
 from maigo.services.synthesizer_rules import SLOT_LABELS, compute_day_and_slot
 from maigo.storage import NewExperienceEvent
 
 router = APIRouter(prefix="/api/v1/dashboard", dependencies=[Depends(require_auth)])
+
+_QUICK_NOTE_KIND_MAP = {
+    "browsed": "browsed",
+    "note": "browsed",
+    "speech": "speech",
+    "game_moment": "milestone",
+}
 
 
 @router.get("/timeline")
@@ -36,7 +48,7 @@ async def get_timeline(
     day_key: Optional[str] = Query(default=None),
     limit_events: int = Query(default=60, ge=1, le=300),
 ) -> Dict[str, Any]:
-    """获取指定作息日的生活编年各时段纪要、在线场次与底层原始经历事件流。"""
+    """获取指定作息日的生活编年各时段纪要、近期主线、在线场次与底层原始经历事件流。"""
     now = int(ctx.clock_ms())
     current_day, current_slot = compute_day_and_slot(
         now,
@@ -47,6 +59,7 @@ async def get_timeline(
 
     def _op(conn: sqlite3.Connection) -> Dict[str, Any]:
         slots = ctx.chronicle_repo.list_by_day(conn, day_key=target_day)
+        arcs = ctx.arcs_repo.list_arcs(conn, statuses=("active", "paused"), limit=20)
         events = ctx.events_repo.list_recent(conn, limit=limit_events)
         active = ctx.sessions_repo.list_active_checkouts(conn)
         branches = ctx.sessions_repo.list_branches(conn)
@@ -63,12 +76,166 @@ async def get_timeline(
                 }
                 for slot in slots
             ],
+            "arcs": [asdict(a) for a in arcs],
             "events": [asdict(ev) for ev in events],
             "active_sessions": [asdict(s) for s in active],
             "branches": [asdict(b) for b in branches],
         }
 
     return await ctx.db.run(_op)
+
+
+@router.get("/status")
+async def get_system_status(ctx: CtxDep) -> Dict[str, Any]:
+    """获取数据库完整度、各子系统运行模式（LLM/规则、混合/稀疏）及近期热备份状态。"""
+    return await ctx.maintenance.doctor_report(
+        synthesizer_mode=ctx.synthesizer.mode,
+        retrieval_mode=ctx.retrieval.mode,
+    )
+
+
+@router.post("/backup")
+async def trigger_backup(ctx: CtxDep) -> Dict[str, Any]:
+    """在看板立即执行一次 SQLite 在线热备份并清理超期旧备份。"""
+    path = await ctx.maintenance.create_backup()
+    size_bytes, backups = await asyncio.to_thread(lambda: (path.stat().st_size, ctx.maintenance.list_backups()))
+    return {
+        "ok": True,
+        "filename": path.name,
+        "size_bytes": size_bytes,
+        "backups": backups,
+    }
+
+
+@router.get("/diary/export")
+async def export_diary(
+    ctx: CtxDep,
+    day_key: Optional[str] = Query(default=None),
+    days: int = Query(default=1, ge=1, le=30),
+    target_visibility: str = Query(default="public"),
+) -> Dict[str, Any]:
+    """导出连续若干个作息日的脱敏 Markdown 生活手账。"""
+    current_day, _ = compute_day_and_slot(
+        int(ctx.clock_ms()),
+        day_rollover_hour=ctx.config.day_rollover_hour,
+        timezone_offset_hours=ctx.config.timezone_offset_hours,
+    )
+    effective_day = (day_key or "").strip() or current_day
+    vis = normalize_visibility(target_visibility, default="public")
+    markdown = await ctx.maintenance.export_diary_markdown(
+        day_key=effective_day,
+        days=days,
+        target_visibility=vis,
+    )
+    return {
+        "ok": True,
+        "day_key": effective_day,
+        "days": days,
+        "target_visibility": vis,
+        "markdown": markdown,
+    }
+
+
+@router.post("/quick-note")
+async def submit_quick_note(payload: QuickNoteIn, ctx: CtxDep) -> Dict[str, Any]:
+    """日常随手投喂一条见闻、灵感或游戏片段，按需立即跑一轮编年合成。"""
+    now = int(ctx.clock_ms())
+    clean_content = payload.content.strip()
+    stored_kind = _QUICK_NOTE_KIND_MAP[payload.kind]
+    metadata: Dict[str, Any] = {"manual_quick_note": True, "note_kind": payload.kind}
+    if payload.kind == "game_moment":
+        metadata["highlight"] = True
+
+    event_in = EventIn(
+        idempotency_key=f"quick-note-{now}-{uuid.uuid4().hex[:12]}",
+        branch_id=payload.branch_id.strip() or "operator",
+        occurred_at_ms=now,
+        kind=stored_kind,
+        actor_role="self",
+        visibility=payload.visibility,
+        summary=clean_content,
+        verbatim=clean_content if payload.kind == "speech" else "",
+        reaction=payload.reaction.strip(),
+        save_id=payload.save_id,
+        metadata=metadata,
+    )
+    ingest_res = await ingest_events(event_in, ctx=ctx)
+    synthesis_dict: Optional[Dict[str, Any]] = None
+    if payload.synthesize_now:
+        report = await ctx.bg_synthesizer.trigger_now(force_seal=False)
+        synthesis_dict = asdict(report)
+    ctx.broker.publish("brief_updated", {"ts_ms": now})
+    return {
+        "ok": True,
+        "event_id": ingest_res.inserted_ids[0] if ingest_res.inserted_ids else None,
+        "synthesis": synthesis_dict,
+    }
+
+
+# ---- 近期主线（温层记忆） ----
+
+
+@router.get("/arcs")
+async def list_arcs(
+    ctx: CtxDep,
+    status: Optional[str] = Query(default=None),
+) -> Dict[str, Any]:
+    """列出跨日持续的近期主线（按最近推进时间倒序）。"""
+    statuses = [status] if status else None
+    rows = await ctx.db.run(lambda c: ctx.arcs_repo.list_arcs(c, statuses=statuses, limit=100))
+    return {"items": [asdict(item) for item in rows]}
+
+
+@router.post("/arcs")
+async def create_arc(payload: LifeArcCreateIn, ctx: CtxDep) -> Dict[str, Any]:
+    """新建或延续一条近期主线。"""
+    created = await ctx.db.run(
+        lambda c: ctx.arcs_repo.upsert_or_create(
+            c,
+            title=payload.title,
+            summary=payload.summary,
+            public_summary=payload.public_summary,
+            visibility=payload.visibility,
+            save_id=payload.save_id,
+            mood_hint=payload.mood_hint,
+        )
+    )
+    ctx.broker.publish("brief_updated", {"ts_ms": int(ctx.clock_ms())})
+    return {"item": asdict(created)}
+
+
+@router.patch("/arcs/{arc_id}")
+async def patch_arc(
+    arc_id: int,
+    payload: LifeArcPatchIn,
+    ctx: CtxDep,
+) -> Dict[str, Any]:
+    """更新近期主线的内容或生命周期状态（active/paused/completed/archived）。"""
+    updated = await ctx.db.run(
+        lambda c: ctx.arcs_repo.update(
+            c,
+            arc_id,
+            title=payload.title,
+            summary=payload.summary,
+            public_summary=payload.public_summary,
+            status=payload.status,
+            mood_hint=payload.mood_hint,
+        )
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"主线不存在: {arc_id}")
+    ctx.broker.publish("brief_updated", {"ts_ms": int(ctx.clock_ms())})
+    return {"item": asdict(updated)}
+
+
+@router.delete("/arcs/{arc_id}")
+async def delete_arc(arc_id: int, ctx: CtxDep) -> Dict[str, Any]:
+    """删除指定近期主线。"""
+    ok = await ctx.db.run(lambda c: ctx.arcs_repo.delete(c, arc_id))
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"主线不存在: {arc_id}")
+    ctx.broker.publish("brief_updated", {"ts_ms": int(ctx.clock_ms())})
+    return {"ok": True}
 
 
 @router.post("/synthesize")

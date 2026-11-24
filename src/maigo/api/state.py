@@ -12,12 +12,22 @@ from fastapi import Depends, Header, HTTPException, Query, Request
 
 from maigo.config import MaiGOConfig
 from maigo.runtime import ClockMs, get_logger, now_ms
-from maigo.services import BackgroundSynthesizer, ChronicleSynthesizer, IdentityService, ViewProjector
+from maigo.services import (
+    BackgroundSynthesizer,
+    ChronicleSynthesizer,
+    EmbeddingClient,
+    HybridRecallService,
+    IdentityService,
+    MaintenanceService,
+    ViewProjector,
+)
 from maigo.services.synthesizer_rules import SynthesisLLMClient
 from maigo.storage import MaiGODatabase
 from maigo.storage.repos import (
     DailyChronicleRepo,
+    EmbeddingRepo,
     ExperienceEventRepo,
+    LifeArcRepo,
     PersonaAnchorRepo,
     PersonRepo,
     SessionRepo,
@@ -64,24 +74,30 @@ class MaiGOContext:
     db: MaiGODatabase
     clock_ms: ClockMs
     identity: IdentityService
+    retrieval: HybridRecallService
+    maintenance: MaintenanceService
     synthesizer: ChronicleSynthesizer
     bg_synthesizer: BackgroundSynthesizer
     projector: ViewProjector
     broker: NotificationBroker = field(default_factory=NotificationBroker)
     events_repo: ExperienceEventRepo = field(init=False)
     chronicle_repo: DailyChronicleRepo = field(init=False)
+    arcs_repo: LifeArcRepo = field(init=False)
     anchors_repo: PersonaAnchorRepo = field(init=False)
     topics_repo: TopicSeedRepo = field(init=False)
     persons_repo: PersonRepo = field(init=False)
     sessions_repo: SessionRepo = field(init=False)
+    embeddings_repo: EmbeddingRepo = field(init=False)
 
     def __post_init__(self) -> None:
         self.events_repo = ExperienceEventRepo(clock_ms=self.clock_ms)
         self.chronicle_repo = DailyChronicleRepo(clock_ms=self.clock_ms)
+        self.arcs_repo = LifeArcRepo(clock_ms=self.clock_ms)
         self.anchors_repo = PersonaAnchorRepo(clock_ms=self.clock_ms)
         self.topics_repo = TopicSeedRepo(clock_ms=self.clock_ms)
         self.persons_repo = PersonRepo(clock_ms=self.clock_ms)
         self.sessions_repo = SessionRepo(clock_ms=self.clock_ms)
+        self.embeddings_repo = EmbeddingRepo(clock_ms=self.clock_ms)
 
 
 def build_context(
@@ -89,10 +105,19 @@ def build_context(
     *,
     clock_ms: ClockMs = now_ms,
     llm_client: Optional[SynthesisLLMClient] = None,
+    embedding_client: Optional[EmbeddingClient] = None,
 ) -> MaiGOContext:
-    """组装核心依赖容器与后台编年调度器。"""
+    """组装核心依赖容器、混合召回、运维工具与后台编年调度器。"""
     db = MaiGODatabase(config.db_path, clock_ms=clock_ms)
     identity = IdentityService(db, identity_salt=config.identity_salt, clock_ms=clock_ms)
+    retrieval = HybridRecallService(
+        db,
+        identity=identity,
+        embedding_config=config.embedding,
+        embedding_client=embedding_client,
+        clock_ms=clock_ms,
+    )
+    maintenance = MaintenanceService(db, config=config, clock_ms=clock_ms)
     synthesizer = ChronicleSynthesizer(
         db,
         identity=identity,
@@ -101,6 +126,10 @@ def build_context(
         timezone_offset_hours=config.timezone_offset_hours,
         clock_ms=clock_ms,
         llm_client=llm_client,
+        retrieval=retrieval,
+        maintenance=maintenance,
+        auto_daily_backup=config.backup.auto_daily,
+        auto_index_embeddings=config.embedding.auto_index,
     )
     broker = NotificationBroker()
 
@@ -121,12 +150,16 @@ def build_context(
         timezone_offset_hours=config.timezone_offset_hours,
         recent_window_ms=config.synthesizer.recent_window_ms,
         clock_ms=clock_ms,
+        retrieval=retrieval,
+        wake_hint_enabled=config.synthesizer.wake_hint_enabled,
     )
     return MaiGOContext(
         config=config,
         db=db,
         clock_ms=clock_ms,
         identity=identity,
+        retrieval=retrieval,
+        maintenance=maintenance,
         synthesizer=synthesizer,
         bg_synthesizer=bg_synthesizer,
         projector=projector,

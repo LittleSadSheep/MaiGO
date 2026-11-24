@@ -33,6 +33,7 @@ from maigo.api.state import CtxDep, require_auth
 from maigo.runtime import get_logger
 from maigo.services.sanitizer import normalize_visibility
 from maigo.storage import ActorRef, NewExperienceEvent
+from maigo.storage.schema import SCHEMA_VERSION
 
 logger = get_logger("api.sync")
 
@@ -41,9 +42,15 @@ public_router = APIRouter()
 
 
 @public_router.get("/health")
-async def health_check() -> Dict[str, Any]:
+async def health_check(ctx: CtxDep) -> Dict[str, Any]:
     """健康检查端点（无需令牌，供进程守护与负载均衡探活）。"""
-    return {"ok": True, "service": "maigo"}
+    return {
+        "ok": True,
+        "service": "maigo",
+        "schema_version": SCHEMA_VERSION,
+        "synthesizer_mode": ctx.synthesizer.mode,
+        "retrieval_mode": ctx.retrieval.mode,
+    }
 
 
 def _default_visibility(ev: EventIn) -> str:

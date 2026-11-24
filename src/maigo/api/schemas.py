@@ -266,8 +266,47 @@ class AnchorPatchIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content: Optional[str] = Field(default=None, min_length=1, max_length=500)
-    status: Optional[Literal["active", "open", "closed", "void"]] = None
+    status: Optional[Literal["active", "open", "closed", "void", "superseded", "stale"]] = None
     note: Optional[str] = Field(default=None, max_length=400)
+
+
+class QuickNoteIn(BaseModel):
+    """运营日常随手投喂事件请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(..., min_length=1, max_length=2000)
+    reaction: str = Field(default="", max_length=1000)
+    kind: Literal["browsed", "note", "speech", "game_moment"] = "browsed"
+    visibility: Literal["public", "group", "private"] = "public"
+    branch_id: str = Field(default="operator", min_length=1, max_length=64)
+    save_id: Optional[str] = Field(default=None, max_length=128)
+    synthesize_now: bool = False
+
+
+class LifeArcCreateIn(BaseModel):
+    """创建或延续近期主线（温层记忆）请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(..., min_length=1, max_length=120)
+    summary: str = Field(..., min_length=1, max_length=1000)
+    public_summary: str = Field(default="", max_length=1000)
+    visibility: Literal["public", "group", "private"] = "public"
+    save_id: Optional[str] = Field(default=None, max_length=128)
+    mood_hint: str = Field(default="", max_length=80)
+
+
+class LifeArcPatchIn(BaseModel):
+    """部分更新近期主线状态或内容请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    summary: Optional[str] = Field(default=None, min_length=1, max_length=1000)
+    public_summary: Optional[str] = Field(default=None, max_length=1000)
+    status: Optional[Literal["active", "paused", "completed", "archived"]] = None
+    mood_hint: Optional[str] = Field(default=None, max_length=80)
 
 
 class TopicCreateIn(BaseModel):

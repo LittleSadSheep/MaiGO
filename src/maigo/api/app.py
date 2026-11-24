@@ -18,6 +18,7 @@ from maigo.api.routes_sync import public_router, router as sync_router
 from maigo.api.state import MaiGOContext, build_context
 from maigo.config import MaiGOConfig
 from maigo.runtime import ClockMs, get_logger, now_ms
+from maigo.services import EmbeddingClient
 from maigo.services.synthesizer_rules import SynthesisLLMClient
 
 logger = get_logger("api.app")
@@ -28,10 +29,16 @@ def create_app(
     *,
     clock_ms: ClockMs = now_ms,
     llm_client: Optional[SynthesisLLMClient] = None,
+    embedding_client: Optional[EmbeddingClient] = None,
 ) -> FastAPI:
     """创建并装配完整的 MaiGO FastAPI + MCP ASGI 应用。"""
     cfg = config or MaiGOConfig()
-    ctx: MaiGOContext = build_context(cfg, clock_ms=clock_ms, llm_client=llm_client)
+    ctx: MaiGOContext = build_context(
+        cfg,
+        clock_ms=clock_ms,
+        llm_client=llm_client,
+        embedding_client=embedding_client,
+    )
     mcp_manager, mcp_endpoint = build_mcp_components(ctx)
 
     @asynccontextmanager
@@ -47,7 +54,7 @@ def create_app(
                 await ctx.db.close()
                 logger.info("MaiGO 服务已安全停止")
 
-    app = FastAPI(title="MaiGO", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="MaiGO", version="0.2.0", lifespan=lifespan)
     app.state.maigo_ctx = ctx
 
     app.include_router(public_router)

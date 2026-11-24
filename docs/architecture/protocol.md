@@ -1,6 +1,6 @@
 # 开放协议、多端接入与第一版闭环规范
 
-> 本文定义 `MaiSwitch` 对外暴露的高兼容开放接口、`24h 流式` 与 `场次型签出/签入` 两种标准接入流程、`Amaidesu` 与 `MaiBot` 的零妥协薄接入映射、可视化看板功能边界，以及第一版（MVP）的可核验完成标准。架构背景与四张核心账见[架构总览](overview.md)。
+> 本文定义 `MaiGO` 对外暴露的高兼容开放接口、`24h 流式` 与 `场次型签出/签入` 两种标准接入流程、`Amaidesu` 与 `MaiBot` 的零妥协薄接入映射、可视化看板功能边界，以及第一版（MVP）的可核验完成标准。架构背景与四张核心账见[架构总览](overview.md)。
 
 ---
 
@@ -9,7 +9,7 @@
 - **基础协议**：HTTP/1.1 JSON REST API（默认监听 `127.0.0.1:8768`，可配置）+ 同端口 `/mcp`（Streamable HTTP MCP 服务，供各端规划器按需挂载检索工具）+ `/api/v1/stream/notifications`（可选 SSE 轻量变更通知，推送 `brief_etag` 更新与跨端实时状态变化）。
 - **鉴权**：配置 `auth_token` 非空时，所有 API 与 `/mcp` 校验请求头 `Authorization: Bearer <token>`；开发本机回环可按配置放行或使用统一令牌。
 - **时间与标识**：所有时刻字段统一使用 Unix epoch 毫秒整数（`*_ms`）；所有写操作支持客户端传入 `idempotency_key`（字符串），服务端按 `(branch_id, idempotency_key)` 保证幂等。
-- **分支身份（`branch_id`）**：任意接入项目通过自报稳定的小写标识区分来源，无需修改 `MaiSwitch` 代码即可横向扩展新渠道（如 `maibot`、`amaidesu`、`bilibili_ops`、`x_ops`、`mc_runner`）。
+- **分支身份（`branch_id`）**：任意接入项目通过自报稳定的小写标识区分来源，无需修改 `MaiGO` 代码即可横向扩展新渠道（如 `maibot`、`amaidesu`、`bilibili_ops`、`x_ops`、`mc_runner`）。
 
 ---
 
@@ -79,7 +79,7 @@
 sequenceDiagram
     autonumber
     participant AMA as "Amaidesu（直播宿主）"
-    participant SW as "MaiSwitch（24h 中心）"
+    participant SW as "MaiGO（24h 中心）"
     participant MB as "MaiBot（QQ 常驻端）"
 
     AMA->>SW: POST /api/v1/sessions/checkout（开播雷霆大拉取）
@@ -90,7 +90,7 @@ sequenceDiagram
         AMA->>SW: POST /api/v1/sessions/{id}/heartbeat（状态心跳 + 话头消费回执）
         SW-->>MB: 更新跨端在线状态（支持延迟确认开播通知与群聊近况回答）
         opt 主播主动回想细节
-            AMA->>SW: MCP switch_recall_life(query)
+            AMA->>SW: MCP maigo_recall_life(query)
             SW-->>AMA: 返回今日/近期跨端经历明细
         end
     end
@@ -115,15 +115,15 @@ sequenceDiagram
    - 上报当前是否在播、当前环节名、当前 `save_id` 以及刚被选用的 `consumed_seed_ids`；支持彩排场过滤（彩排场不触发跨端广播与签入入账）。
 3. **下播签入（Checkin）**：`POST /api/v1/sessions/{checkout_id}/checkin`
    - 上报本场下播整理产出的结构化结晶：场次概览、本场新增档案行（含高光标记与原话）、新增/已兑现承诺、跨端熟人本场互动记录、游戏存档收尾摘要。
-   - `MaiSwitch` 单事务落库并立即运行一次编年合成，使刚下播的经历无缝汇入「麦麦的今晚」。
+   - `MaiGO` 单事务落库并立即运行一次编年合成，使刚下播的经历无缝汇入「麦麦的今晚」。
 
 ### 3.3 标准 MCP 工具面（`/mcp`）
 
 向支持 MCP 的各端规划器提供三个只读/轻量工具：
 
-- `switch_recall_life(query: str, days: int = 7, limit: int = 5)`：基于 SQLite FTS5 与时间衰减混合检索跨端经历（如被问到“你下午在 B 站看的那个视频具体讲啥”时按需查原文）。
-- `switch_lookup_person(platform: str, external_id: str)`：按平台与外部 ID 查询已绑定熟人的跨端往来（自动按调用方会话可见性裁剪）。
-- `switch_resolve_promise(anchor_id: int, status: str, evidence: str)`：标记某条跨端约定已兑现或作废。
+- `maigo_recall_life(query: str, days: int = 7, limit: int = 5)`：基于 SQLite FTS5 与时间衰减混合检索跨端经历（如被问到“你下午在 B 站看的那个视频具体讲啥”时按需查原文）。
+- `maigo_lookup_person(platform: str, external_id: str)`：按平台与外部 ID 查询已绑定熟人的跨端往来（自动按调用方会话可见性裁剪）。
+- `maigo_resolve_promise(anchor_id: int, status: str, evidence: str)`：标记某条跨端约定已兑现或作废。
 
 ---
 
@@ -138,15 +138,15 @@ sequenceDiagram
    - `topic_cards` 映射为日常见闻话题卡注入 `TopicDeck`，主播在杂谈选用卡片后随下次心跳回调 `consumed_seed_ids`；
    - `person_directory` 缓存在场次内存中：当命中已绑定的观众弹幕或游戏玩家公屏发言时，在本地记忆线索（`MemoryCues`）附上一句跨端熟人近况（说话路径零网络 I/O）。同步更新 `Amaidesu` 侧关于跨端身份的决策口径：由原先“一刀切永不告知关联”调整为**“仅对确权绑定对象打通公开/群内记忆，严格屏蔽私聊与原始账号，行为上守住不公开点破未公开马甲”**。
 2. **下播签入回推**：
-   - 订阅下播整理完成节点，将已通过代码校验的本场档案行、承诺变更与高光直接调用 `checkin` 推给 `MaiSwitch`，不再推送整场原始弹幕流。
+   - 订阅下播整理完成节点，将已通过代码校验的本场档案行、承诺变更与高光直接调用 `checkin` 推给 `MaiGO`，不再推送整场原始弹幕流。
 
-### 4.2 `MaiBot` 侧薄插件映射（`MaiBot-Switch-Adapter`）
+### 4.2 `MaiBot` 侧薄插件映射（`MaiBot-MaiGO-Adapter`）
 
 `MaiBot` 主程序零改动，独立插件仓库承载以下轻量职责：
 
 1. **出站自动采集**：挂接发送完成钩子，当麦麦在白名单互通群或私聊发出回复后，异步向 `POST /api/v1/events` 上报对话上下文摘要与麦麦原话（互通群标 `group`，私聊标 `private`），无需依赖模型手动调用记录工具。
 2. **入站双层注入**：后台协程定期刷新慢层 `stable_brief` 本地缓存；在 `maisaka.planner.before_request` 与 `maisaka.replyer.before_request` 中，将 `stable_brief` 插入系统提示词后稳定位，将 `live_context` 与当前发言群友的 `actor_cards` 附在末尾动态提示位。
-3. **保留群聊单嘴与开播喊人**：延续“群里只留 QQ 麦麦一张嘴”的体验——收到 `MaiSwitch` 广播的正式场稳定开播状态后，按配置延迟确认并唤醒 QQ 麦麦用自己的语气在通知群喊人；主播在直播间想往群里传话仍走托付机制。
+3. **保留群聊单嘴与开播喊人**：延续“群里只留 QQ 麦麦一张嘴”的体验——收到 `MaiGO` 广播的正式场稳定开播状态后，按配置延迟确认并唤醒 QQ 麦麦用自己的语气在通知群喊人；主播在直播间想往群里传话仍走托付机制。
 
 ### 4.3 外部 B 站 / X 开源项目接入约定
 
@@ -159,7 +159,7 @@ sequenceDiagram
 
 ## 5. 可视化看板（`dashboard/`）职责
 
-`MaiSwitch` 内置轻量 Web 看板，既是日常运维控制面，也是直观检验「麦麦一天生活合成效果」的观测窗：
+`MaiGO` 内置轻量 Web 看板，既是日常运维控制面，也是直观检验「麦麦一天生活合成效果」的观测窗：
 
 1. **今日生活时间线页**：按时间轴展示今日各时段合成纪要、当前跨端在线状态（哪几个分支在线、是否在播）及底层原始经历事件溯源。
 2. **立场锚点与鲜活话头页**：展示自动提取的麦麦近期观点、跨端未兑现约定（支持人工编辑、了结、判误记）以及鲜活话头池（显示已在哪些分支聊过，支持人工投喂日常见闻卡）。
@@ -170,7 +170,7 @@ sequenceDiagram
 
 ## 6. 第一版（MVP）可核验完成标准
 
-第一版开发以跑通 **`MaiSwitch` 核心服务端 + 看板 + `MaiBot` 与 `Amaidesu` 双端真实闭环 + 外部社媒标准接入就绪** 为准绳，全部满足以下判据方可收口：
+第一版开发以跑通 **`MaiGO` 核心服务端 + 看板 + `MaiBot` 与 `Amaidesu` 双端真实闭环 + 外部社媒标准接入就绪** 为准绳，全部满足以下判据方可收口：
 
 1. **核心存储与合成引擎完备**：
    - SQLite（WAL + FTS5）建表与版本迁移机制就绪，完整覆盖 `experience_events`、`daily_chronicles`、`persona_anchors`、`topic_seeds`、`persons`（含身份绑定、可见性过滤与遗忘名单）、`checkout_sessions` 与 `save_states`。
@@ -180,8 +180,8 @@ sequenceDiagram
 3. **可视化看板可用**：
    - 看板四大核心页面（今日时间线、立场与话头、跨端人物图谱、分支监控与视图预览台）构建通过并与后端真实 API 联调打通。
 4. **`Amaidesu` 与 `MaiBot` 薄接入端跑通**：
-   - `Amaidesu` 侧完成可选 Switch 同步模块：开播签出装填简报、向 `TopicDeck` 注入鲜活话头卡、本地跨端熟人线索命中，以及下播整理后自动签入回推；`MaiSwitch` 离线时开播、决策与下播整理零异常降级。
-   - `MaiBot` 插件侧完成 `MaiBot-Switch-Adapter`（通过假宿主与真实 MCP/HTTP 联调测试）：群聊/私聊发言自动按可见性上报、规划与回复双钩子正确注入慢快两层视图与群友跨端名片、正式场开播延迟喊人可用。
+   - `Amaidesu` 侧完成可选 `MaiGO` 同步模块（`[maigo_sync]`）：开播签出装填简报、向 `TopicDeck` 注入鲜活话头卡、本地跨端熟人线索命中，以及下播整理后自动签入回推；`MaiGO` 离线时开播、决策与下播整理零异常降级。
+   - `MaiBot` 插件侧完成 `MaiBot-MaiGO-Adapter`（通过假宿主与真实 MCP/HTTP 联调测试）：群聊/私聊发言自动按可见性上报、规划与回复双钩子正确注入慢快两层视图与群友跨端名片、正式场开播延迟喊人可用。
 5. **全链路「麦麦的一天」端到端闭环验证通过**：
    - 自动化端到端验收测试完整跑通以下剧本并产出可查验报告：
      ① 模拟外部社媒分支上报一条“下午刷视频并留评论”的 `browsed/speech` 事件 →

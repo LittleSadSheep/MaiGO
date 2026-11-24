@@ -303,3 +303,68 @@ async def test_visibility_isolation_sanitization_and_stable_brief_cache(tmp_path
     assert "秘密心事" not in next_day.stable_brief
 
     await db.close()
+
+
+async def test_same_slot_resynthesis_does_not_resurrect_closed_promise(tmp_path) -> None:
+    """同一作息时段内先兑现旧承诺、再触发新事件合成时，已关闭承诺不得借同槽重算复活。"""
+    clock = MutableClock(_ms(2026, 11, 24, 15, 0))
+    db = MaiGODatabase(tmp_path / "no_resurrect.sqlite3", clock_ms=clock)
+    await db.initialize()
+    identity = IdentityService(db, clock_ms=clock)
+    event_repo = ExperienceEventRepo(clock_ms=clock)
+    synth = ChronicleSynthesizer(
+        db,
+        identity=identity,
+        config=SynthesizerConfig(auto_background=False),
+        clock_ms=clock,
+    )
+
+    await db.run(
+        lambda c: event_repo.ingest_batch(
+            c,
+            [
+                NewExperienceEvent(
+                    idempotency_key="prom-afternoon-1",
+                    branch_id="maibot",
+                    occurred_at_ms=clock(),
+                    kind="speech",
+                    actor_role="self",
+                    visibility="group",
+                    summary="答应今晚直播建海边灯塔",
+                    verbatim="我答应今晚直播去海边建新灯塔！",
+                )
+            ],
+        )
+    )
+    rep1 = await synth.synthesize_pending(force_seal=False)
+    assert rep1.created_anchors == 1
+    anchors = await db.run(lambda c: synth._anchors.list_anchors(c))
+    assert len(anchors) == 1 and anchors[0].status == "open"
+
+    # 同一 afternoon 时段内兑现关闭该承诺，并入一条同槽新里程碑再次触发合成
+    await db.run(lambda c: synth._anchors.update(c, anchors[0].id, status="closed", note="已提前完工"))
+    clock.set(_ms(2026, 11, 24, 15, 30))
+    await db.run(
+        lambda c: event_repo.ingest_batch(
+            c,
+            [
+                NewExperienceEvent(
+                    idempotency_key="milestone-afternoon-2",
+                    branch_id="amaidesu",
+                    occurred_at_ms=clock(),
+                    kind="milestone",
+                    actor_role="self",
+                    visibility="public",
+                    summary="提前建成发光新灯塔",
+                    verbatim="灯塔已经点亮啦",
+                )
+            ],
+        )
+    )
+    await synth.synthesize_pending(force_seal=True)
+
+    open_after = await db.run(lambda c: synth._anchors.list_anchors(c, anchor_type="promise", statuses=["open"]))
+    assert open_after == []
+    all_after = await db.run(lambda c: synth._anchors.list_anchors(c))
+    assert len(all_after) == 1 and all_after[0].status == "closed"
+    await db.close()

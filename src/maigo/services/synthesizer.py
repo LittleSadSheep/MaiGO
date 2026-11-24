@@ -355,7 +355,17 @@ class ChronicleSynthesizer:
                 continue
             seen_keys.add((cand.anchor_type, clean_content))
 
-            existing = self._anchors.find_by_content(conn, anchor_type=cand.anchor_type, content=clean_content)
+            resolved_type = cand.anchor_type if cand.anchor_type in ("stance", "promise") else "stance"
+            # 同一源事件已产出过同类锚点（包含已兑现或判误作废）时，同槽重合成不得将其复活为未结项
+            if cand.status in ("open", "active"):
+                prior_for_source = conn.execute(
+                    "SELECT id FROM persona_anchors WHERE source_event_id = ? AND anchor_type = ? LIMIT 1",
+                    (src.id, resolved_type),
+                ).fetchone()
+                if prior_for_source is not None:
+                    continue
+
+            existing = self._anchors.find_by_content(conn, anchor_type=resolved_type, content=clean_content)
             if existing is not None:
                 if cand.status in ("closed", "void") and existing.status != cand.status:
                     self._anchors.update(conn, existing.id, status=cand.status, note=cand.note or existing.note)

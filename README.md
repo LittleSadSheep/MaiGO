@@ -30,6 +30,52 @@
 
 ---
 
+## v0.2 核心能力概览
+
+- **活人感四层记忆**：原始事件流 → 带心情底色（`mood_tag`）与待续悬念（`unfinished_thread`）的日内编年热层 → 跨日连续推进的近期主线（`life_arcs` 温层）→ 支持观点演化链（`superseded_by_id`）与超期承诺自动降权（`stale`）的长期锚点层；当日上午无记录且已有历史时在午后自动生成固定作息留白，不破坏前缀缓存 `brief_etag`。
+- **双路混合检索与零外置库兜底**：内置 SQLite FTS5（`unicode61` + `trigram` + `LIKE`）稀疏检索；按需配置 OpenAI 兼容 `[embedding]` 后自动开启单机 `float32 BLOB` 向量与 RRF 融合 + 时间衰减加权，未配置或接口故障时零报错退回纯稀疏。
+- **单机运维、热备份与日常自喂养**：内置 `doctor` 健康诊断、`VACUUM INTO` 在线一致热备份、按可见档位裁剪的 Markdown 手账导出，以及位于 [`examples/daily_feeder/`](examples/daily_feeder/README.md) 的零额外依赖 RSS/Atom 巡检投喂示例。
+
+---
+
+## 快速启动与常用命令
+
+1. 安装依赖并复制配置示例（`config.toml` 默认已被 Git 忽略）：
+
+```powershell
+uv sync
+Copy-Item config.example.toml config.toml
+```
+
+2. 构建 Web 看板静态产物并启动常驻服务（默认 `http://127.0.0.1:8768`）：
+
+```powershell
+pnpm --dir dashboard install
+pnpm --dir dashboard build
+uv run maigo serve --config config.toml
+```
+
+3. 常用诊断、备份与手账导出命令：
+
+```powershell
+# 核验 SQLite 完整性、模式（llm/rule、hybrid/sparse）与备份情况
+uv run maigo doctor --config config.toml
+
+# 生成一份一致性 SQLite 热备份（自动按 keep_days 滚动清理旧备份）
+uv run maigo backup --config config.toml
+
+# 导出最近 3 天公开见闻手账 Markdown
+uv run maigo export-diary --config config.toml --days 3 --visibility public
+```
+
+4. 可选启动日常 RSS/Atom 巡检投喂脚本（详细配置见 [`examples/daily_feeder/README.md`](examples/daily_feeder/README.md)）：
+
+```powershell
+uv run python examples/daily_feeder/feeder.py --config examples/daily_feeder/feeds.example.toml --once --dry-run
+```
+
+---
+
 ## 文档导航
 
 - [架构总览（`docs/architecture/overview.md`）](docs/architecture/overview.md)：拓扑边界、四张核心数据账、快慢分层缓存保护、防互博与跨端认人机制。

@@ -7,6 +7,7 @@
 ## 1. 传输与通用约定
 
 - **基础协议**：HTTP/1.1 JSON REST API（默认监听 `127.0.0.1:8768`，可配置）+ 同端口 `/mcp`（Streamable HTTP MCP 服务，供各端规划器按需挂载检索工具）+ `/api/v1/stream/notifications`（可选 SSE 轻量变更通知，推送 `brief_etag` 更新与跨端实时状态变化）。
+- **探活观测**：`GET /health`（无鉴权）返回 `{"ok": true, "service": "maigo", "schema_version": 2, "synthesizer_mode": "llm|rule", "retrieval_mode": "hybrid|sparse"}`，便于守护进程与联调台实时确认当前子系统工作模式。
 - **鉴权**：配置 `auth_token` 非空时，所有 API 与 `/mcp` 校验请求头 `Authorization: Bearer <token>`；开发本机回环可按配置放行或使用统一令牌。
 - **时间与标识**：所有时刻字段统一使用 Unix epoch 毫秒整数（`*_ms`）；所有写操作支持客户端传入 `idempotency_key`（字符串），服务端按 `(branch_id, idempotency_key)` 保证幂等。
 - **分支身份（`branch_id`）**：任意接入项目通过自报稳定的小写标识区分来源，无需修改 `MaiGO` 代码即可横向扩展新渠道（如 `maibot`、`amaidesu`、`bilibili_ops`、`x_ops`、`mc_runner`）。
@@ -117,11 +118,11 @@ sequenceDiagram
    - 上报本场下播整理产出的结构化结晶：场次概览、本场新增档案行（含高光标记与原话）、新增/已兑现承诺、跨端熟人本场互动记录、游戏存档收尾摘要。
    - `MaiGO` 单事务落库并立即运行一次编年合成，使刚下播的经历无缝汇入「麦麦的今晚」。
 
-### 3.3 标准 MCP 工具面（`/mcp`）
+### 3.3 标准 MCP 工具面（`/mcp`）与混合回忆 HTTP 接口
 
-向支持 MCP 的各端规划器提供三个只读/轻量工具：
+向支持 MCP 的各端规划器提供三个只读/轻量工具，同时开放同源 HTTP 召回接口 `GET /api/v1/views/recall`：
 
-- `maigo_recall_life(query: str, days: int = 7, limit: int = 5)`：基于 SQLite FTS5 与时间衰减混合检索跨端经历（如被问到“你下午在 B 站看的那个视频具体讲啥”时按需查原文）。
+- `maigo_recall_life(query: str, days: int = 7, limit: int = 5, target_visibility: str = "public")`：基于 `HybridRecallService`（SQLite FTS5 `unicode61 + trigram + LIKE` 稀疏路 + 可选单机 `float32 BLOB` 语义向量 RRF 融合 + 时间衰减）跨事件、温层主线与锚点检索经历，严格按 `target_visibility` 与遗忘名单裁剪。
 - `maigo_lookup_person(platform: str, external_id: str)`：按平台与外部 ID 查询已绑定熟人的跨端往来（自动按调用方会话可见性裁剪）。
 - `maigo_resolve_promise(anchor_id: int, status: str, evidence: str)`：标记某条跨端约定已兑现或作废。
 
@@ -148,23 +149,33 @@ sequenceDiagram
 2. **入站双层注入**：后台协程定期刷新慢层 `stable_brief` 本地缓存；在 `maisaka.planner.before_request` 与 `maisaka.replyer.before_request` 中，将 `stable_brief` 插入系统提示词后稳定位，将 `live_context` 与当前发言群友的 `actor_cards` 附在末尾动态提示位。
 3. **保留群聊单嘴与开播喊人**：延续“群里只留 QQ 麦麦一张嘴”的体验——收到 `MaiGO` 广播的正式场稳定开播状态后，按配置延迟确认并唤醒 QQ 麦麦用自己的语气在通知群喊人；主播在直播间想往群里传话仍走托付机制。
 
-### 4.3 外部 B 站 / X 开源项目接入约定
+### 4.3 外部 B 站 / X 开源项目与日常巡检脚本接入约定
 
 外部社媒项目无需感知 `MaiBot` 或 `Amaidesu` 的存在，仅需两步即可融入同一人格：
 
 1. 生成评论、动态或推文前，请求 `GET /api/v1/views/context?branch_id=<id>&target_visibility=public` 获取麦麦今日生活脉络与近期立场锚点；
 2. 浏览内容产生主观感想或发出评论/动态后，请求 `POST /api/v1/events` 上报 `browsed` 或 `speech` 事件。
 
+对于暂无外部社媒 bot 的单机自用场景，仓库内置零额外非 MIT 依赖的 [`examples/daily_feeder/`](../../examples/daily_feeder/README.md) 示例脚本（仅用标准库 + `httpx`），定时解析 RSS 2.0 / Atom 订阅并带本地指纹去重、可选生成第一人称观后感后上报 `POST /api/v1/events`（`branch_id="daily_feeder"`，`kind="browsed"`）。
+
 ---
 
-## 5. 可视化看板（`dashboard/`）职责
+## 5. 可视化看板（`dashboard/`）、运维接口与 CLI
 
-`MaiGO` 内置轻量 Web 看板，既是日常运维控制面，也是直观检验「麦麦一天生活合成效果」的观测窗：
+`MaiGO` 内置轻量 Web 看板，既是日常运维控制面，也是直观检验「麦麦一天生活合成效果」的观测窗（v0.2 扩展状态监测、手账导出、温层主线与随手投喂能力）：
 
-1. **今日生活时间线页**：按时间轴展示今日各时段合成纪要、当前跨端在线状态（哪几个分支在线、是否在播）及底层原始经历事件溯源。
-2. **立场锚点与鲜活话头页**：展示自动提取的麦麦近期观点、跨端未兑现约定（支持人工编辑、了结、判误记）以及鲜活话头池（显示已在哪些分支聊过，支持人工投喂日常见闻卡）。
-3. **跨端人物图谱页**：管理统一人物档案，支持手动绑定/解绑各平台账号、生成与核销自助绑定口令、审核疑似同人候选、查看某位熟人在不同可见性级别下的投影预览及执行隐私清除。
-4. **分支监控与联调演练台**：展示各接入分支最近心跳与吞吐计数，提供一键模拟事件投递与多端视图预览器（输入分支与场合，实时预览模型将看到的慢层与快层完整文本）。
+1. **顶部运行态观测与一键热备份**：对接 `GET /api/v1/dashboard/status` 与 `POST /api/v1/dashboard/backup`，实时展示 `llm/rule`、`hybrid/sparse`、`schema_version` 并生成一致 SQLite 热备份（仅回显文件名与大小）。
+2. **今日生活时间线页**：支持日期前/后切换、各时段心情标签（`mood_tag`）与待续悬念（`unfinished_thread`）展示；内置「导出生活手账 Markdown」（`GET /api/v1/dashboard/diary/export`，按可见性裁剪）、「日常随手投喂」（`POST /api/v1/dashboard/quick-note`）以及「近期主线（温层 `life_arcs`）」增删改查（`GET/POST/PATCH/DELETE /api/v1/dashboard/arcs`）。
+3. **立场锚点与鲜活话头页**：展示麦麦近期观点（支持 `superseded` 演化去向显示）、跨端承诺（含超期 `stale` 状态显示，支持兑现/误记/重新激活，`PATCH /api/v1/dashboard/anchors/{id}`）以及鲜活话头池（显示消费分支轨迹与人工投喂）。
+4. **跨端人物图谱页**：管理统一人物档案，支持手动绑定/解绑各平台账号、生成与核销自助绑定口令、审核疑似同人候选、查看某位熟人在不同可见性级别下的投影预览及执行隐私清除。
+5. **分支监控与联调演练台**：展示各接入分支最近心跳与吞吐计数，提供一键模拟事件投递与多端视图预览器（输入分支与场合，实时预览模型将看到的慢层与快层完整文本）。
+
+常用命令行入口（`uv run maigo ...`）：
+
+- `serve [--config ...] [--host ...] [--port ...]`：启动 24h HTTP + MCP + 看板服务（默认子命令）；
+- `doctor [--config ...]`：输出 SQLite 完整性、表完整度、子系统模式与备份数量 JSON 诊断报告；
+- `backup [--config ...] [--out ...]`：执行一次 `VACUUM INTO` 热备份并按保留天数清理旧文件；
+- `export-diary [--config ...] [--day YYYY-MM-DD] [--days N] [--visibility public|group|private]`：导出脱敏日常手账 Markdown。
 
 ---
 

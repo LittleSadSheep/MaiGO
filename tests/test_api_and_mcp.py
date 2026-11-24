@@ -299,6 +299,41 @@ async def test_mcp_streamable_http_tools_and_dashboard_routes(tmp_path) -> None:
             br = await client.get("/api/v1/dashboard/branches", headers=headers)
             assert br.status_code == 200
 
+            # 跨端 REST 回想接口：校验鉴权、命中公开经历与私聊可见性隔离
+            await client.post(
+                "/api/v1/events",
+                headers=headers,
+                json={
+                    "idempotency_key": "priv-secret-1",
+                    "branch_id": "maibot",
+                    "occurred_at_ms": _ms(2026, 11, 24, 16, 0),
+                    "kind": "interaction",
+                    "actor_role": "peer",
+                    "visibility": "private",
+                    "actors": [{"platform": "qq", "external_id": "10001"}],
+                    "summary": "私聊悄悄提起像素密码箱",
+                },
+            )
+            unauth_recall = await client.get("/api/v1/views/recall", params={"query": "像素"})
+            assert unauth_recall.status_code == 401
+            pub_recall = await client.get(
+                "/api/v1/views/recall",
+                headers=headers,
+                params={"query": "像素", "target_visibility": "group"},
+            )
+            assert pub_recall.status_code == 200
+            pub_text = pub_recall.json()["text"]
+            assert pub_recall.json()["ok"] is True
+            assert "像素风动画" in pub_text
+            assert "像素密码箱" not in pub_text
+            priv_recall = await client.get(
+                "/api/v1/views/recall",
+                headers=headers,
+                params={"query": "像素", "target_visibility": "private"},
+            )
+            assert priv_recall.status_code == 200
+            assert "像素密码箱" in priv_recall.json()["text"]
+
         # 2. MCP 未鉴权拦截测试
         async with httpx2.AsyncClient(
             transport=httpx2.ASGITransport(app=app),

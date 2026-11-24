@@ -246,6 +246,20 @@ async def consume_topic(
     return {"ok": True, "topic_id": updated.id, "consumed_branches": updated.consumed_branches}
 
 
+@router.get("/api/v1/views/recall")
+async def recall_life_view(
+    ctx: CtxDep,
+    query: str = Query(..., min_length=1, max_length=200),
+    days: int = Query(default=7, ge=1, le=90),
+    limit: int = Query(default=5, ge=1, le=20),
+    target_visibility: str = Query(default="public"),
+) -> Dict[str, Any]:
+    """按关键词检索跨端经历与立场锚点（HTTP 接口，与 MCP ``switch_recall_life`` 同源）。"""
+    vis = normalize_visibility(target_visibility, default="public")
+    text = await ctx.projector.recall_life(query=query.strip(), days=days, limit=limit, target_visibility=vis)
+    return {"ok": True, "text": text}
+
+
 @router.post("/api/v1/sessions/checkout", response_model=CheckoutResponse)
 async def checkout_session(
     payload: CheckoutRequest,

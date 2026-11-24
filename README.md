@@ -1,53 +1,34 @@
 # MaiGO
 
-**MaiGO**（*Mai + Ego* 统一自我 / 迷子 *maigo* 不再走散 / *Mai + Go* 走向多端）是面向虚拟主播「麦麦」多端生态的 **24 小时常驻跨端记忆与生活流中心**。
+MaiGO 是面向多端虚拟主播系统的跨端记忆与日常时间线服务，为 24 小时常驻端、按需启停的直播宿主、游戏宿主与外部社交平台客户端提供统一的事件收纳、日内整理与上下文视图。
 
-它位于各业务项目（常驻群聊机器人、直播宿主、游戏宿主、社交媒体冲浪与运营组件）之间，将散落在不同渠道的无序互动、自主表态与日常浏览经历汇总归一化，合成为连贯的**「麦麦生活中的一天」**，消除跨端发言前后矛盾（左右脑互博）与熟人跨端失忆问题。
+## 职责边界
 
----
+1. 独立承担跨端数据沉淀与视图投影，不接管群聊、直播或游戏宿主自身的实时对话决策循环。
+2. 对外提供标准 HTTP JSON、SSE 与同端口 MCP 接口；各端通过边缘适配器接入，当 MaiGO 离线或禁用时各端仍可独立运行。
+3. 观点与约定严格限制只从 `actor_role="self"` 的本人记录中提取，避免外部用户发言污染人设。
+4. 跨平台人物账号仅依据显式绑定或自助口令合并，并在面向语言模型的视图中剥离原始平台账号与 `private` 级别私聊内容。
+5. 上下文输出拆分为稳定背景（`stable_brief`）与实时动态（`live_context`），使系统提示词在同日无封存更新时维持前缀缓存有效。
 
-## 设计理念
+## 核心能力与目录结构
 
-1. **只做经历合成与记忆中心，不抢各端大脑**
-   各端（群聊、直播、游戏、社媒）保留各自独立的实时决策与表达循环；`MaiGO` 专职承担跨端经历收纳、日内时间线编排、言行立场对齐与跨端身份映射。
-2. **零妥协边界接入**
-   不迫使任何接入项目修改自身内部架构或为其妥协设计。`MaiGO` 提供平台无关的高兼容 HTTP JSON 与 MCP 接口，并按各端原生上下文结构输出定制投影视图。
-3. **生活流驱动真实杂谈**
-   将日常水群、游戏经历、社媒浏览与评论互动统一映射为第一人称日内生活脉络与带消费记录的鲜活话头池，使直播杂谈与日常群聊顺着真实经历自然延展。
-4. **跨端认人与行为级隐私护栏**
-   对已确权绑定的跨平台熟人打通记忆与称呼；同时通过可见性分级（公开 / 群内 / 私聊）与原始账号脱敏，在行为与数据层面杜绝公开场合越界泄露隐私。
-
----
-
-## 接入模式
-
-- **24 小时常驻分支**（如 `MaiBot` 群聊端、未来的 B 站 / X 外部开源运营端）：
-  实时或高频推送新产生的发言与浏览事件；按需拉取或增量同步今日生活简报、近期立场锚点与在场对象的跨端名片。
-- **场次型按需分支**（如 `Amaidesu` 直播宿主、非直播游戏宿主）：
-  - **启动签出（Checkout）**：开播或上号前一次性拉取最新今日生活简报、未兑现跨端约定、鲜活杂谈话头卡与跨端熟人快照；
-  - **场内轻量同步**：运行期间上报实时状态心跳（如正在直播及当前环节），按需调用检索工具查询细节；
-  - **结束签入（Checkin）**：下播整理完成后，一次性将本场沉淀的档案、承诺变更、高光事件与互动摘要回推合入当日生活流。
-
----
-
-## v0.2 核心能力概览
-
-- **活人感四层记忆**：原始事件流 → 带心情底色（`mood_tag`）与待续悬念（`unfinished_thread`）的日内编年热层 → 跨日连续推进的近期主线（`life_arcs` 温层）→ 支持观点演化链（`superseded_by_id`）与超期承诺自动降权（`stale`）的长期锚点层；当日上午无记录且已有历史时在午后自动生成固定作息留白，不破坏前缀缓存 `brief_etag`。
-- **双路混合检索与零外置库兜底**：内置 SQLite FTS5（`unicode61` + `trigram` + `LIKE`）稀疏检索；按需配置 OpenAI 兼容 `[embedding]` 后自动开启单机 `float32 BLOB` 向量与 RRF 融合 + 时间衰减加权，未配置或接口故障时零报错退回纯稀疏。
-- **单机运维、热备份与日常自喂养**：内置 `doctor` 健康诊断、`VACUUM INTO` 在线一致热备份、按可见档位裁剪的 Markdown 手账导出，以及位于 [`examples/daily_feeder/`](examples/daily_feeder/README.md) 的零额外依赖 RSS/Atom 巡检投喂示例。
-
----
+- `src/maigo/core/`：领域模型（`models.py`）、隐私过滤与脱敏（`privacy.py`）、跨端人物档案（`identity.py`）、日内整理引擎（`digest.py`、`digest_rules.py`）、全文与向量双路检索（`recall.py`）、上下文构建（`context.py`）与运维维护（`maintenance.py`）。
+- `src/maigo/storage/`：SQLite 连接封装（WAL 与 FTS5 全文索引）、Schema 迁移以及按表划分的仓储层（`repos/`）。
+- `src/maigo/container.py`：服务依赖装配容器。
+- `src/maigo/server/`：FastAPI 应用装配（`app.py`）、鉴权与通知广播（`auth.py`）、MCP 工具服务（`mcp.py`）以及划分清晰的路由（`routes/sync.py`、`routes/sessions.py`、`routes/dashboard.py`）。
+- `dashboard/`：Vue 3 Web 管理看板，提供今日时间线、快捷录入、持续主线管理、观点与话题管理、跨端人物档案与接入监控功能。
+- `examples/rss_collector/`：无额外第三方依赖的 RSS/Atom 订阅采集示例（仅用标准库与 `httpx`）。
 
 ## 快速启动与常用命令
 
-1. 安装依赖并复制配置示例（`config.toml` 默认已被 Git 忽略）：
+1. 安装依赖并复制配置文件（`config.toml` 默认已被 Git 忽略）：
 
 ```powershell
 uv sync
 Copy-Item config.example.toml config.toml
 ```
 
-2. 构建 Web 看板静态产物并启动常驻服务（默认 `http://127.0.0.1:8768`）：
+2. 构建 Web 看板静态产物并启动服务（默认监听 `http://127.0.0.1:8768`）：
 
 ```powershell
 pnpm --dir dashboard install
@@ -55,29 +36,28 @@ pnpm --dir dashboard build
 uv run maigo serve --config config.toml
 ```
 
-3. 常用诊断、备份与手账导出命令：
+3. 诊断、热备份与记录导出命令：
 
 ```powershell
-# 核验 SQLite 完整性、模式（llm/rule、hybrid/sparse）与备份情况
+# 检查 SQLite 完整性、运行模式（llm/rule、hybrid/sparse）与备份数量
 uv run maigo doctor --config config.toml
 
-# 生成一份一致性 SQLite 热备份（自动按 keep_days 滚动清理旧备份）
+# 生成一份一致性 SQLite 热备份（按 keep_days 滚动清理旧文件）
 uv run maigo backup --config config.toml
 
-# 导出最近 3 天公开见闻手账 Markdown
+# 导出最近 3 天公开范围的日常记录 Markdown
 uv run maigo export-diary --config config.toml --days 3 --visibility public
 ```
 
-4. 可选启动日常 RSS/Atom 巡检投喂脚本（详细配置见 [`examples/daily_feeder/README.md`](examples/daily_feeder/README.md)）：
+4. 试用 RSS 订阅采集器（详见 [`examples/rss_collector/README.md`](examples/rss_collector/README.md)）：
 
 ```powershell
-uv run python examples/daily_feeder/feeder.py --config examples/daily_feeder/feeds.example.toml --once --dry-run
+uv run python examples/rss_collector/collector.py --config examples/rss_collector/feeds.example.toml --once --dry-run
 ```
-
----
 
 ## 文档导航
 
-- [架构总览（`docs/architecture/overview.md`）](docs/architecture/overview.md)：拓扑边界、四张核心数据账、快慢分层缓存保护、防互博与跨端认人机制。
-- [开放协议与第一版闭环规范（`docs/architecture/protocol.md`）](docs/architecture/protocol.md)：通用事件信封、流式与签出/签入 API 契约、各端薄接入映射、看板职责与第一版验收标准。
-- [编码代理准则（`AGENTS.md`）](AGENTS.md)：架构红线、代码规范、测试与提交流程。
+- [`CONTEXT.md`](CONTEXT.md)：全仓统一业务术语表与禁用别名说明。
+- [架构总览](docs/architecture/overview.md)：模块分层、存储结构、混合检索与缓存策略说明。
+- [开放协议与接入规范](docs/architecture/protocol.md)：HTTP/MCP 接口契约、多端接入流程与验收基准。
+- [编码规范](AGENTS.md)：仓库架构约束、代码风格、脱敏要求与提交流程。

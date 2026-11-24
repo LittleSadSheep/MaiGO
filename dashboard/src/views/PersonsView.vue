@@ -3,17 +3,17 @@
     <div v-if="err" class="error-banner">{{ err }}</div>
 
     <div class="grid-2">
-      <!-- 左：新建人物、手动绑定与自助绑定口令 -->
+      <!-- 左：新建人物档案与绑定列表 -->
       <div class="card stack">
         <div class="card-header">
-          <h3>跨端人物图谱（PersonGraph）</h3>
+          <h3>跨端人物档案</h3>
           <button class="ghost" @click="load">刷新</button>
         </div>
 
         <form class="row" @submit.prevent="createPerson">
-          <input v-model="newPerson.display_name" placeholder="统一公开称呼（如：老熟人甲）" required />
-          <input v-model="newPerson.notes" placeholder="备注（如：手工大佬）" />
-          <button class="primary" type="submit">建档</button>
+          <input v-model="newPerson.display_name" placeholder="统一公开称呼（如：联系人甲）" required />
+          <input v-model="newPerson.notes" placeholder="备注（如：共同关注手工主题）" />
+          <button class="primary" type="submit">新建档案</button>
         </form>
 
         <div class="stack" style="max-height: 480px; overflow-y: auto">
@@ -49,10 +49,10 @@
         </div>
       </div>
 
-      <!-- 右：绑定操作、口令核销、疑似同人审核与隐私预览 -->
+      <!-- 右：账号绑定、口令核销、候选审核与视图预览 -->
       <div class="stack">
         <div class="card stack">
-          <h3>显式绑定 / 核销口令 / 一键遗忘</h3>
+          <h3>账号绑定 / 口令核销 / 遗忘清除</h3>
           <form class="row" @submit.prevent="bindIdentity">
             <select v-model.number="bindForm.person_id" required>
               <option :value="0" disabled>选择人物</option>
@@ -76,7 +76,7 @@
           </div>
 
           <form class="row" @submit.prevent="forgetIdentity">
-            <input v-model="forgetForm.platform" placeholder="遗忘平台（如 qq）" required />
+            <input v-model="forgetForm.platform" placeholder="待遗忘平台（如 qq）" required />
             <input v-model="forgetForm.external_id" placeholder="外部 ID" required />
             <button class="danger-btn" type="submit">执行遗忘清除</button>
           </form>
@@ -91,7 +91,7 @@
               <div class="muted">{{ c.reason }}</div>
             </div>
             <div class="row">
-              <button class="primary" @click="resolveCandidate(c.id, true)">确认同人</button>
+              <button class="primary" @click="resolveCandidate(c.id, true)">确认合并</button>
               <button class="danger-btn" @click="resolveCandidate(c.id, false)">驳回</button>
             </div>
           </div>
@@ -99,7 +99,7 @@
 
         <div v-if="previewText" class="card stack">
           <div class="card-header">
-            <h3>脱敏投影预览（{{ previewLevel }}）</h3>
+            <h3>脱敏视图预览（{{ previewLevel }}）</h3>
             <button class="ghost" @click="previewText = ''">收起</button>
           </div>
           <pre class="preview-box">{{ previewText }}</pre>

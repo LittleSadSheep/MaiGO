@@ -1,11 +1,11 @@
 <template>
   <div class="stack">
+    <!-- 分支在线状态 -->
     <div v-if="err" class="error-banner">{{ err }}</div>
 
-    <!-- 分支监控概览 -->
     <div class="card">
       <div class="card-header">
-        <h3>接入分支与场次监控</h3>
+        <h3>接入分支与会话状态</h3>
         <button class="ghost" @click="loadBranches">刷新</button>
       </div>
       <div class="row">
@@ -19,13 +19,13 @@
     </div>
 
     <div class="grid-2">
-      <!-- 左：事件模拟演练台 -->
+      <!-- 左：事件调试工具 -->
       <div class="card stack">
         <div class="card-header">
-          <h3>联调事件模拟器</h3>
+          <h3>事件调试与测试发送</h3>
           <div class="row">
-            <button class="ghost" type="button" @click="fillPreset('bili')">预设：B站刷视频</button>
-            <button class="ghost" type="button" @click="fillPreset('qq')">预设：QQ群立约</button>
+            <button class="ghost" type="button" @click="fillPreset('bili')">示例：B站浏览</button>
+            <button class="ghost" type="button" @click="fillPreset('qq')">示例：QQ 群约定</button>
           </div>
         </div>
 
@@ -33,10 +33,10 @@
           <div class="row">
             <input v-model="simForm.branch_id" placeholder="branch_id" required />
             <select v-model="simForm.kind">
-              <option value="browsed">browsed（刷社媒）</option>
+              <option value="browsed">browsed（浏览见闻）</option>
               <option value="speech">speech（本人发言）</option>
               <option value="interaction">interaction（互动）</option>
-              <option value="milestone">milestone（节点）</option>
+              <option value="milestone">milestone（阶段节点）</option>
             </select>
             <select v-model="simForm.actor_role">
               <option value="self">self</option>
@@ -50,30 +50,31 @@
             </select>
           </div>
           <input v-model="simForm.summary" placeholder="事件摘要 summary" required />
-          <input v-model="simForm.verbatim" placeholder="原话 verbatim（self 立场/承诺必填）" />
-          <input v-model="simForm.reaction" placeholder="主观感想 reaction" />
+          <input v-model="simForm.verbatim" placeholder="原话 verbatim（self 观点/约定必填）" />
+          <input v-model="simForm.reaction" placeholder="主观评价 reaction" />
           <div class="row">
             <input v-model="simActor.platform" placeholder="触发人平台（可选，如 bilibili）" />
             <input v-model="simActor.external_id" placeholder="触发人外部 ID（可选）" />
             <input v-model="simActor.display_name" placeholder="昵称" />
           </div>
-          <button class="primary" type="submit">投递并立即合成</button>
+          <button class="primary" type="submit">提交并触发整理</button>
         </form>
         <div v-if="simResult" class="item-box muted">{{ simResult }}</div>
       </div>
 
-      <!-- 右：多端视图实时预览器 -->
+      <!-- 右：上下文视图实时预览 -->
       <div class="card stack">
         <div class="card-header">
-          <h3>多端上下文实时预览器</h3>
+          <h3>上下文视图实时预览</h3>
           <button class="primary" @click="previewView">刷新预览</button>
         </div>
 
         <div class="row">
           <select v-model="previewParams.branch_id">
-            <option value="amaidesu">amaidesu（直播间）</option>
-            <option value="maibot">maibot（QQ群）</option>
-            <option value="bilibili_ops">bilibili_ops（社媒）</option>
+            <option value="amaidesu">amaidesu（直播端）</option>
+            <option value="maibot">maibot（QQ 群）</option>
+            <option value="bilibili_ops">bilibili_ops（B站）</option>
+            <option value="rss_collector">rss_collector（订阅采集）</option>
           </select>
           <select v-model="previewParams.target_visibility">
             <option value="public">public（公开）</option>
@@ -85,13 +86,13 @@
 
         <div v-if="preview">
           <div class="muted" style="margin-bottom: 6px">brief_etag: {{ preview.brief_etag }}</div>
-          <div class="muted">慢层 stable_brief（系统提示词末尾）：</div>
+          <div class="muted">稳定背景 stable_brief（系统提示词固定段）：</div>
           <pre class="preview-box" style="margin-bottom: 10px">{{ preview.stable_brief || "（空）" }}</pre>
-          <div class="muted">快层 live_context（请求尾部动态段）：</div>
+          <div class="muted">实时动态 live_context（请求尾部动态段）：</div>
           <pre class="preview-box" style="margin-bottom: 10px">{{ preview.live_context || "（空）" }}</pre>
-          <div class="muted">命中的熟人卡片（{{ preview.actor_cards.length }}）：</div>
+          <div class="muted">在场人物摘要（{{ preview.actor_cards.length }}）：</div>
           <pre class="preview-box">{{
-            preview.actor_cards.map((c) => c.hint).join("\n") || "（无命中或未传在场账号）"
+            preview.actor_cards.map((c) => c.hint).join("\n") || "（未命中或未传在场账号）"
           }}</pre>
         </div>
       </div>
@@ -145,15 +146,15 @@ function fillPreset(kind: "bili" | "qq") {
     simForm.kind = "browsed";
     simForm.actor_role = "self";
     simForm.visibility = "public";
-    simForm.summary = "刷到用粘土捏萨卡班甲鱼的手工视频";
-    simForm.verbatim = "这个眼神还原度太高了";
-    simForm.reaction = "晚上直播杂谈可以顺便聊聊手工翻车经历";
+    simForm.summary = "浏览粘土手工制作视频";
+    simForm.verbatim = "造型细节还原得很细腻";
+    simForm.reaction = "晚上直播闲聊时可以分享手工制作见闻";
   } else {
     simForm.branch_id = "maibot";
     simForm.kind = "speech";
     simForm.actor_role = "self";
     simForm.visibility = "group";
-    simForm.summary = "在群里聊天并答应今晚直播带大家建新灯塔";
+    simForm.summary = "在群里约定今晚直播建造海边灯塔";
     simForm.verbatim = "今晚直播带大家把海边新灯塔建起来！";
     simForm.reaction = "";
   }
@@ -193,7 +194,7 @@ async function simulateEvent() {
         }),
       }
     );
-    simResult.value = `投递成功：入库 ${res.ingest.accepted} 条，封存时段 ${res.synthesis.sealed_slots} 个`;
+    simResult.value = `提交成功：入库 ${res.ingest.accepted} 条，封存时段 ${res.synthesis.sealed_slots} 个`;
     await Promise.all([loadBranches(), previewView()]);
   } catch (e) {
     err.value = (e as Error).message;

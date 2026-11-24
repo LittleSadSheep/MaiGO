@@ -3,7 +3,7 @@
     <header class="topbar">
       <div class="brand">
         <h1>MaiGO</h1>
-        <span>24h 跨端记忆与生活流中心（迷子不再走散）</span>
+        <span>跨端记忆与日常时间线服务</span>
       </div>
 
       <nav class="nav-tabs">
@@ -21,7 +21,7 @@
       <div class="row">
         <template v-if="status">
           <span class="badge" :class="status.synthesizer_mode === 'llm' ? 'ok' : 'info'">
-            {{ status.synthesizer_mode === "llm" ? "合成: LLM" : "合成: 规则" }}
+            {{ status.synthesizer_mode === "llm" ? "整理: LLM" : "整理: 规则" }}
           </span>
           <span class="badge" :class="status.retrieval_mode === 'hybrid' ? 'ok' : ''">
             {{ status.retrieval_mode === "hybrid" ? "召回: 混合语义" : "召回: 稀疏检索" }}
@@ -45,18 +45,18 @@
     <div v-if="statusErr" class="error-banner">{{ statusErr }}</div>
 
     <TimelineView v-if="activeTab === 'timeline'" :key="refreshKey" />
-    <AnchorsTopicsView v-else-if="activeTab === 'anchors'" :key="refreshKey" />
+    <StancesTopicsView v-else-if="activeTab === 'stances'" :key="refreshKey" />
     <PersonsView v-else-if="activeTab === 'persons'" :key="refreshKey" />
-    <PlaygroundView v-else :key="refreshKey" />
+    <MonitorView v-else :key="refreshKey" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { apiRequest, getStoredToken, setStoredToken } from "./api/client";
-import AnchorsTopicsView from "./views/AnchorsTopicsView.vue";
+import MonitorView from "./views/MonitorView.vue";
 import PersonsView from "./views/PersonsView.vue";
-import PlaygroundView from "./views/PlaygroundView.vue";
+import StancesTopicsView from "./views/StancesTopicsView.vue";
 import TimelineView from "./views/TimelineView.vue";
 
 interface SystemStatus {
@@ -68,10 +68,10 @@ interface SystemStatus {
 }
 
 const tabs = [
-  { id: "timeline", label: "今日生活时间线" },
-  { id: "anchors", label: "立场与鲜活话头" },
-  { id: "persons", label: "跨端人物图谱" },
-  { id: "playground", label: "分支监控与演练台" },
+  { id: "timeline", label: "今日时间线" },
+  { id: "stances", label: "观点与话题" },
+  { id: "persons", label: "人物与账号" },
+  { id: "monitor", label: "接入监控与调试" },
 ] as const;
 
 type TabId = (typeof tabs)[number]["id"];
@@ -102,7 +102,7 @@ async function triggerBackup() {
       method: "POST",
     });
     const kb = Math.max(1, Math.round(res.size_bytes / 1024));
-    statusMsg.value = `已生成一致热备份：${res.filename}（${kb} KB）`;
+    statusMsg.value = `已生成一致性热备份：${res.filename}（${kb} KB）`;
     await loadStatus();
   } catch (e) {
     statusErr.value = (e as Error).message;

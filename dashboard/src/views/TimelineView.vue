@@ -2,7 +2,7 @@
   <div class="stack">
     <div class="card">
       <div class="card-header">
-        <h2>今日生活脉络与跨端动态</h2>
+        <h2>今日时间线与跨端状态</h2>
         <div class="row">
           <button class="ghost" @click="shiftDay(-1)">← 前一天</button>
           <select v-model="selectedDay" @change="load">
@@ -13,7 +13,7 @@
             回今天
           </button>
           <button class="ghost" @click="toggleDiaryPanel">
-            {{ showDiaryPanel ? "收起手账导出" : "导出手账 Markdown" }}
+            {{ showDiaryPanel ? "收起记录导出" : "记录导出 Markdown" }}
           </button>
           <button class="ghost" @click="load">刷新</button>
           <button class="primary" :disabled="synthesizing" @click="triggerSynthesize(false)">
@@ -30,14 +30,14 @@
           {{ b.branch_id }} · {{ b.status }}
         </span>
         <span v-for="s in timeline?.active_sessions || []" :key="s.checkout_id" class="badge warn">
-          正在直播：{{ s.title || s.branch_id }}（{{ s.segment_title || "自由" }}）
+          在线会话：{{ s.title || s.branch_id }}（{{ s.segment_title || "自由" }}）
         </span>
       </div>
     </div>
 
     <div v-if="showDiaryPanel" class="card">
       <div class="card-header">
-        <h3>每日生活手账（Markdown 导出）</h3>
+        <h3>每日记录导出（Markdown）</h3>
         <div class="row">
           <select v-model.number="diaryDays">
             <option :value="1">最近 1 天</option>
@@ -45,12 +45,12 @@
             <option :value="7">最近 7 天</option>
           </select>
           <select v-model="diaryVisibility">
-            <option value="public">公开可见（public）</option>
-            <option value="group">群聊可见（group）</option>
+            <option value="public">公开（public）</option>
+            <option value="group">群聊（group）</option>
             <option value="private">完整含私聊（private）</option>
           </select>
           <button class="primary" :disabled="exportingDiary" @click="loadDiary">
-            {{ exportingDiary ? "导出中..." : "生成手账" }}
+            {{ exportingDiary ? "导出中..." : "生成记录" }}
           </button>
           <button v-if="diaryMarkdown" class="ghost" @click="copyDiary">
             {{ diaryCopied ? "已复制" : "复制全文" }}
@@ -58,42 +58,42 @@
         </div>
       </div>
       <pre v-if="diaryMarkdown" class="preview-box">{{ diaryMarkdown }}</pre>
-      <div v-else class="muted">点击“生成手账”即可按所选天数与可见档位输出脱敏日记。</div>
+      <div v-else class="muted">点击“生成记录”按所选天数与可见范围输出脱敏 Markdown。</div>
     </div>
 
     <div v-if="err" class="error-banner">{{ err }}</div>
 
-    <!-- 快捷随手投喂 + 近期主线 -->
+    <!-- 快捷录入 + 持续主线 -->
     <div class="grid-2">
       <div class="card">
         <div class="card-header">
-          <h3>日常随手投喂</h3>
-          <span class="muted">手工补一条刷到的见闻、灵感或游戏高光</span>
+          <h3>快捷录入</h3>
+          <span class="muted">补录单条日常浏览、笔记、发言或游戏里程碑</span>
         </div>
         <form class="stack" @submit.prevent="submitQuickNote">
           <div class="row">
             <select v-model="quickForm.kind">
-              <option value="browsed">刷到的见闻（browsed）</option>
-              <option value="note">随手灵感笔记（note）</option>
-              <option value="speech">麦麦亲口发言（speech）</option>
-              <option value="game_moment">游戏高光时刻（game_moment）</option>
+              <option value="browsed">浏览见闻（browsed）</option>
+              <option value="note">日常笔记（note）</option>
+              <option value="speech">本人发言（speech）</option>
+              <option value="game_moment">游戏里程碑（game_moment）</option>
             </select>
             <select v-model="quickForm.visibility">
               <option value="public">公开（public）</option>
               <option value="group">群聊（group）</option>
-              <option value="private">私密（private）</option>
+              <option value="private">私聊（private）</option>
             </select>
             <input v-model="quickForm.save_id" placeholder="存档标识 save_id（可选）" style="width: 170px" />
           </div>
-          <input v-model="quickForm.content" placeholder="发生了什么 / 刷到了什么内容" required />
-          <input v-model="quickForm.reaction" placeholder="当时的小想法或吐槽（可选，也会留作待续灵感）" />
+          <input v-model="quickForm.content" placeholder="事件内容或浏览摘要" required />
+          <input v-model="quickForm.reaction" placeholder="主观评价或备注（可选）" />
           <div class="row" style="justify-content: space-between">
             <label class="row muted" style="cursor: pointer">
               <input v-model="quickForm.synthesize_now" type="checkbox" />
-              投喂后立即整理进今日编年
+              录入后立即整理进时间线
             </label>
             <button class="primary" type="submit" :disabled="submittingQuick">
-              {{ submittingQuick ? "写入中..." : "记入今天" }}
+              {{ submittingQuick ? "写入中..." : "保存记录" }}
             </button>
           </div>
         </form>
@@ -101,13 +101,13 @@
 
       <div class="card">
         <div class="card-header">
-          <h3>近期主线（温层记忆）</h3>
-          <span class="muted">跨多天持续推进的项目、存档或热议主题</span>
+          <h3>持续主线</h3>
+          <span class="muted">跨多日推进的项目、游戏存档或阶段主题</span>
         </div>
         <form class="stack" style="margin-bottom: 12px" @submit.prevent="createArc">
           <div class="row">
             <input v-model="arcForm.title" placeholder="主线标题（如：新铁路工地建设）" required style="flex: 1" />
-            <input v-model="arcForm.mood_hint" placeholder="当前心境/氛围" style="width: 140px" />
+            <input v-model="arcForm.mood_hint" placeholder="状态标注" style="width: 140px" />
             <select v-model="arcForm.visibility">
               <option value="public">public</option>
               <option value="group">group</option>
@@ -115,7 +115,7 @@
             </select>
           </div>
           <div class="row">
-            <input v-model="arcForm.summary" placeholder="近况描述（将投影给模型做长期背景）" required style="flex: 1" />
+            <input v-model="arcForm.summary" placeholder="进展描述（纳入稳定背景输出）" required style="flex: 1" />
             <button class="primary" type="submit">添加主线</button>
           </div>
         </form>
@@ -135,12 +135,12 @@
                 <button v-if="arc.status === 'active'" class="ghost" @click="patchArc(arc.id, 'paused')">暂停</button>
                 <button v-else class="ghost" @click="patchArc(arc.id, 'active')">恢复</button>
                 <button class="ghost" @click="patchArc(arc.id, 'completed')">完结</button>
-                <button class="danger-btn" @click="deleteArc(arc.id)">删</button>
+                <button class="danger-btn" @click="deleteArc(arc.id)">删除</button>
               </div>
             </div>
             <div>{{ arc.public_summary || arc.summary }}</div>
           </div>
-          <div v-if="!timeline?.arcs?.length" class="muted">暂无进行中的温层主线。</div>
+          <div v-if="!timeline?.arcs?.length" class="muted">暂无进行中的持续主线。</div>
         </div>
       </div>
     </div>
@@ -148,10 +148,10 @@
     <div class="grid-2">
       <div class="card">
         <div class="card-header">
-          <h3>时段编年纪要</h3>
-          <span class="muted">已封存段落进入慢层提示词，逐字节稳定</span>
+          <h3>时段整理纪要</h3>
+          <span class="muted">已封存段落归入稳定背景，同日内保持字节稳定</span>
         </div>
-        <div v-if="!timeline?.slots?.length" class="muted">暂无纪要，可在右上方点击“立即整理”或在上方随手投喂。</div>
+        <div v-if="!timeline?.slots?.length" class="muted">暂无纪要，可在右上方点击“立即整理”或在上方快捷录入。</div>
         <div v-else class="stack">
           <div v-for="slot in timeline.slots" :key="slot.id" class="item-box">
             <div class="row" style="justify-content: space-between; margin-bottom: 6px">
@@ -160,12 +160,12 @@
                 <span v-if="slot.mood_tag" class="badge info">{{ slot.mood_tag }}</span>
               </div>
               <span class="badge" :class="slot.status === 'sealed' ? 'ok' : 'warn'">
-                {{ slot.status === "sealed" ? "已封存（慢层）" : "进行中（快层）" }}
+                {{ slot.status === "sealed" ? "已封存（稳定背景）" : "进行中（实时动态）" }}
               </span>
             </div>
             <div>{{ slot.public_body || slot.body || "（无公开内容）" }}</div>
             <div v-if="slot.unfinished_thread" class="muted" style="margin-top: 4px">
-              待续悬念：{{ slot.unfinished_thread }}
+              未完事项：{{ slot.unfinished_thread }}
             </div>
             <div v-if="slot.body && slot.body !== slot.public_body" class="muted" style="margin-top: 6px">
               含私聊完整版：{{ slot.body }}
@@ -176,7 +176,7 @@
 
       <div class="card">
         <div class="card-header">
-          <h3>原始经历事件溯源</h3>
+          <h3>原始事件记录</h3>
           <span class="muted">共 {{ timeline?.events?.length || 0 }} 条近期事件</span>
         </div>
         <div v-if="!timeline?.events?.length" class="muted">暂无原始事件。</div>
@@ -193,7 +193,7 @@
             </div>
             <div>{{ ev.summary }}</div>
             <div v-if="ev.verbatim" class="muted" style="margin-top: 4px">原话：「{{ ev.verbatim }}」</div>
-            <div v-if="ev.reaction" class="muted" style="margin-top: 2px">感想：{{ ev.reaction }}</div>
+            <div v-if="ev.reaction" class="muted" style="margin-top: 2px">评价：{{ ev.reaction }}</div>
           </div>
         </div>
       </div>

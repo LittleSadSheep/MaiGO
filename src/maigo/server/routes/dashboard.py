@@ -10,8 +10,11 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from maigo.api.routes_sync import _parse_active_actors, ingest_events
-from maigo.api.schemas import (
+from maigo.core.digest_rules import SLOT_LABELS, compute_day_and_slot
+from maigo.core.privacy import normalize_visibility
+from maigo.server.auth import CtxDep, require_auth
+from maigo.server.routes.sync import _parse_active_actors, ingest_events
+from maigo.server.schemas import (
     AnchorCreateIn,
     AnchorPatchIn,
     BindTokenIssueIn,
@@ -27,9 +30,6 @@ from maigo.api.schemas import (
     TopicCreateIn,
     TopicPatchIn,
 )
-from maigo.api.state import CtxDep, require_auth
-from maigo.core.digest_rules import SLOT_LABELS, compute_day_and_slot
-from maigo.core.privacy import normalize_visibility
 from maigo.storage import NewExperienceEvent
 
 router = APIRouter(prefix="/api/v1/dashboard", dependencies=[Depends(require_auth)])

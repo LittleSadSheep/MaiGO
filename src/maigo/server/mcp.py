@@ -19,11 +19,12 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import Response
 from starlette.types import Receive, Scope, Send
 
-from maigo.api.state import MaiGOContext, verify_token_value
+from maigo.container import MaiGOContext
 from maigo.core.privacy import normalize_visibility
 from maigo.runtime import get_logger
+from maigo.server.auth import verify_token_value
 
-logger = get_logger("api.mcp")
+logger = get_logger("server.mcp")
 
 
 def _tool_definitions() -> List[types.Tool]:

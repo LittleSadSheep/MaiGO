@@ -12,8 +12,8 @@ import httpx2
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from maigo.api import create_app
 from maigo.config import MaiGOConfig, SynthesizerConfig
+from maigo.server import create_app
 
 
 def _ms(year: int, month: int, day: int, hour: int, minute: int = 0) -> int:

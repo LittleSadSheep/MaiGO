@@ -9,8 +9,8 @@ from typing import Dict, List, Optional, Sequence
 
 import httpx
 
-from maigo.api import create_app
 from maigo.config import BackupConfig, EmbeddingConfig, MaiGOConfig, SynthesizerConfig
+from maigo.server import create_app
 from maigo.storage.schema import SCHEMA_VERSION
 
 

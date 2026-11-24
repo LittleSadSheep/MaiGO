@@ -10,8 +10,8 @@ from types import ModuleType
 
 import httpx
 
-from maigo.api import create_app
 from maigo.config import MaiGOConfig, SynthesizerConfig
+from maigo.server import create_app
 
 _FEEDER_PATH = Path(__file__).resolve().parents[1] / "examples" / "daily_feeder" / "feeder.py"
 

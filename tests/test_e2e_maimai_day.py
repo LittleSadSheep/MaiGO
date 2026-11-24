@@ -12,8 +12,8 @@ from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 import uvicorn
 
-from maigo.api import create_app
 from maigo.config import MaiGOConfig, SynthesizerConfig
+from maigo.server import create_app
 
 _FAKE_QQ_ID = "10001"
 _FAKE_BILI_ID = "20002"

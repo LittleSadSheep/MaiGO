@@ -7,8 +7,8 @@ from pathlib import Path
 
 import httpx
 
-from maigo.api import create_app
 from maigo.config import MaiGOConfig, SynthesizerConfig
+from maigo.server import create_app
 
 _DIST_DIR = Path(__file__).resolve().parents[1] / "dashboard" / "dist"
 

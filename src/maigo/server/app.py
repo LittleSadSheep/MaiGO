@@ -12,16 +12,15 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.routing import Route
 
-from maigo.api.mcp_server import build_mcp_components
-from maigo.api.routes_dashboard import router as dashboard_router
-from maigo.api.routes_sync import public_router, router as sync_router
-from maigo.api.state import MaiGOContext, build_context
 from maigo.config import MaiGOConfig
+from maigo.container import MaiGOContext, build_context
 from maigo.core import EmbeddingClient
 from maigo.core.digest_rules import SynthesisLLMClient
 from maigo.runtime import ClockMs, get_logger, now_ms
+from maigo.server.mcp import build_mcp_components
+from maigo.server.routes import dashboard_router, public_router, sessions_router, sync_router
 
-logger = get_logger("api.app")
+logger = get_logger("server.app")
 
 
 def create_app(
@@ -59,6 +58,7 @@ def create_app(
 
     app.include_router(public_router)
     app.include_router(sync_router)
+    app.include_router(sessions_router)
     app.include_router(dashboard_router)
 
     # 注册精确路径与带尾斜杠路径，防止 307 重定向影响 MCP 客户端

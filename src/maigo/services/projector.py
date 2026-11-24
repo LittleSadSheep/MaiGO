@@ -14,18 +14,18 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple
 
-from maiswitch.runtime import ClockMs, now_ms
-from maiswitch.services.identity import ActorCardProjection, IdentityService, PersonDirectoryEntry
-from maiswitch.services.sanitizer import (
+from maigo.runtime import ClockMs, now_ms
+from maigo.services.identity import ActorCardProjection, IdentityService, PersonDirectoryEntry
+from maigo.services.sanitizer import (
     allowed_visibilities,
     describe_visibility_scope,
     normalize_visibility,
     sanitize_for_model,
 )
-from maiswitch.services.synthesizer_rules import SLOT_LABELS, compute_day_and_slot
-from maiswitch.storage.db import SwitchDatabase
-from maiswitch.storage.models import CheckoutSessionRow, DailyChronicleRow, PersonaAnchorRow
-from maiswitch.storage.repos import (
+from maigo.services.synthesizer_rules import SLOT_LABELS, compute_day_and_slot
+from maigo.storage.db import MaiGODatabase
+from maigo.storage.models import CheckoutSessionRow, DailyChronicleRow, PersonaAnchorRow
+from maigo.storage.repos import (
     DailyChronicleRepo,
     ExperienceEventRepo,
     PersonaAnchorRepo,
@@ -121,7 +121,7 @@ class ViewProjector:
 
     def __init__(
         self,
-        db: SwitchDatabase,
+        db: MaiGODatabase,
         *,
         identity: IdentityService,
         day_rollover_hour: int = 4,
@@ -357,7 +357,7 @@ class ViewProjector:
         limit: int = 5,
         target_visibility: str = "public",
     ) -> str:
-        """混合检索跨端经历与锚点，供 MCP ``switch_recall_life`` 与看板检索使用。"""
+        """混合检索跨端经历与锚点，供 MCP ``maigo_recall_life`` 与看板检索使用。"""
         vis_level = normalize_visibility(target_visibility, default="public")
         vis_allowed = allowed_visibilities(vis_level)
         since_ms = int(self._clock_ms()) - max(1, int(days)) * 24 * 3600 * 1000

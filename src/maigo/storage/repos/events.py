@@ -7,8 +7,8 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from maiswitch.runtime import ClockMs, now_ms
-from maiswitch.storage.models import ActorRef, ExperienceEventRow, NewExperienceEvent
+from maigo.runtime import ClockMs, now_ms
+from maigo.storage.models import ActorRef, ExperienceEventRow, NewExperienceEvent
 
 
 @dataclass(frozen=True)

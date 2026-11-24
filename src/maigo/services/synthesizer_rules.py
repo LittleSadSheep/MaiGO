@@ -10,9 +10,9 @@ from typing import Dict, List, Optional, Protocol, Sequence, Tuple
 
 import httpx
 
-from maiswitch.runtime import get_logger
-from maiswitch.services.sanitizer import describe_visibility_scope, sanitize_for_model
-from maiswitch.storage.models import DailyChronicleRow, ExperienceEventRow
+from maigo.runtime import get_logger
+from maigo.services.sanitizer import describe_visibility_scope, sanitize_for_model
+from maigo.storage.models import DailyChronicleRow, ExperienceEventRow
 
 logger = get_logger("services.synthesizer.rules")
 

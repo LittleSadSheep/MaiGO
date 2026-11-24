@@ -14,17 +14,17 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from maiswitch.runtime import ClockMs, get_logger, now_ms
-from maiswitch.services.sanitizer import allowed_visibilities, describe_visibility_scope, sanitize_for_model
-from maiswitch.storage.db import SwitchDatabase
-from maiswitch.storage.models import (
+from maigo.runtime import ClockMs, get_logger, now_ms
+from maigo.services.sanitizer import allowed_visibilities, describe_visibility_scope, sanitize_for_model
+from maigo.storage.db import MaiGODatabase
+from maigo.storage.models import (
     ActorRef,
     BindTokenRow,
     IdentityCandidateRow,
     PersonIdentityRow,
     PersonRow,
 )
-from maiswitch.storage.repos import ExperienceEventRepo, PersonRepo
+from maigo.storage.repos import ExperienceEventRepo, PersonRepo
 
 logger = get_logger("services.identity")
 
@@ -68,9 +68,9 @@ class IdentityService:
 
     def __init__(
         self,
-        db: SwitchDatabase,
+        db: MaiGODatabase,
         *,
-        identity_salt: str = "maiswitch-default-salt",
+        identity_salt: str = "maigo-default-salt",
         clock_ms: ClockMs = now_ms,
     ) -> None:
         self._db = db

@@ -1,6 +1,6 @@
-"""MaiSwitch 运行配置模型与加载逻辑。
+"""MaiGO 运行配置模型与加载逻辑。
 
-支持优先级：环境变量 ``MAISWITCH_*`` > TOML 配置文件 > 字段默认值。
+支持优先级：环境变量 ``MAIGO_*`` > TOML 配置文件 > 字段默认值。
 """
 
 from __future__ import annotations
@@ -30,19 +30,19 @@ class SynthesizerConfig(BaseModel):
     timeout_ms: int = Field(default=15_000, ge=1_000, description="外部合成接口单次请求超时（毫秒）")
 
 
-class SwitchConfig(BaseModel):
-    """MaiSwitch 服务根配置。"""
+class MaiGOConfig(BaseModel):
+    """MaiGO 服务根配置。"""
 
     model_config = ConfigDict(extra="forbid")
 
     host: str = Field(default="127.0.0.1", description="HTTP 与 MCP 服务监听地址")
     port: int = Field(default=8768, ge=1, le=65535, description="HTTP 与 MCP 服务监听端口")
     auth_token: str = Field(default="", description="Bearer 访问令牌；留空表示允许无鉴权本地调试")
-    db_path: str = Field(default="data/maiswitch.sqlite3", description="SQLite 数据库文件路径")
+    db_path: str = Field(default="data/maigo.sqlite3", description="SQLite 数据库文件路径")
     day_rollover_hour: int = Field(default=4, ge=0, le=23, description="作息切日小时（本地时间 0~23）")
     timezone_offset_hours: int = Field(default=8, ge=-12, le=14, description="本地时区相对 UTC 小时偏移")
     log_level: str = Field(default="INFO", description="日志级别")
-    identity_salt: str = Field(default="maiswitch-default-salt", description="遗忘名单身份摘要盐值")
+    identity_salt: str = Field(default="maigo-default-salt", description="遗忘名单身份摘要盐值")
     dashboard_dist_dir: str = Field(default="dashboard/dist", description="前端看板构建产物目录")
     synthesizer: SynthesizerConfig = Field(default_factory=SynthesizerConfig, description="编年合成器配置")
 
@@ -51,7 +51,7 @@ def load_config(
     config_path: Optional[Path | str] = None,
     *,
     env: Optional[Mapping[str, str]] = None,
-) -> SwitchConfig:
+) -> MaiGOConfig:
     """从 TOML 文件与环境变量加载配置，并保证覆盖顺序可预测。"""
     raw: dict[str, Any] = {}
     if config_path is not None:
@@ -61,23 +61,23 @@ def load_config(
 
     env_map = os.environ if env is None else env
     _apply_env_overrides(raw, env_map)
-    return SwitchConfig.model_validate(raw)
+    return MaiGOConfig.model_validate(raw)
 
 
 def _apply_env_overrides(raw: dict[str, Any], env_map: Mapping[str, str]) -> None:
     """将扁平环境变量映射到配置字典，避免调用方在运行前反复改配置文件。"""
     top_str = {
-        "MAISWITCH_HOST": "host",
-        "MAISWITCH_AUTH_TOKEN": "auth_token",
-        "MAISWITCH_DB_PATH": "db_path",
-        "MAISWITCH_LOG_LEVEL": "log_level",
-        "MAISWITCH_IDENTITY_SALT": "identity_salt",
-        "MAISWITCH_DASHBOARD_DIST_DIR": "dashboard_dist_dir",
+        "MAIGO_HOST": "host",
+        "MAIGO_AUTH_TOKEN": "auth_token",
+        "MAIGO_DB_PATH": "db_path",
+        "MAIGO_LOG_LEVEL": "log_level",
+        "MAIGO_IDENTITY_SALT": "identity_salt",
+        "MAIGO_DASHBOARD_DIST_DIR": "dashboard_dist_dir",
     }
     top_int = {
-        "MAISWITCH_PORT": "port",
-        "MAISWITCH_DAY_ROLLOVER_HOUR": "day_rollover_hour",
-        "MAISWITCH_TIMEZONE_OFFSET_HOURS": "timezone_offset_hours",
+        "MAIGO_PORT": "port",
+        "MAIGO_DAY_ROLLOVER_HOUR": "day_rollover_hour",
+        "MAIGO_TIMEZONE_OFFSET_HOURS": "timezone_offset_hours",
     }
     for env_key, field_name in top_str.items():
         if env_key in env_map and env_map[env_key] != "":
@@ -88,15 +88,15 @@ def _apply_env_overrides(raw: dict[str, Any], env_map: Mapping[str, str]) -> Non
 
     synth = dict(raw.get("synthesizer") or {})
     synth_str = {
-        "MAISWITCH_LLM_BASE_URL": "base_url",
-        "MAISWITCH_LLM_API_KEY": "api_key",
-        "MAISWITCH_LLM_MODEL": "model",
+        "MAIGO_LLM_BASE_URL": "base_url",
+        "MAIGO_LLM_API_KEY": "api_key",
+        "MAIGO_LLM_MODEL": "model",
     }
     synth_int = {
-        "MAISWITCH_SYNTH_BATCH_THRESHOLD": "batch_event_threshold",
-        "MAISWITCH_SYNTH_MIN_INTERVAL_MS": "min_interval_ms",
-        "MAISWITCH_SYNTH_RECENT_WINDOW_MS": "recent_window_ms",
-        "MAISWITCH_LLM_TIMEOUT_MS": "timeout_ms",
+        "MAIGO_SYNTH_BATCH_THRESHOLD": "batch_event_threshold",
+        "MAIGO_SYNTH_MIN_INTERVAL_MS": "min_interval_ms",
+        "MAIGO_SYNTH_RECENT_WINDOW_MS": "recent_window_ms",
+        "MAIGO_LLM_TIMEOUT_MS": "timeout_ms",
     }
     for env_key, field_name in synth_str.items():
         if env_key in env_map and env_map[env_key] != "":
@@ -104,8 +104,8 @@ def _apply_env_overrides(raw: dict[str, Any], env_map: Mapping[str, str]) -> Non
     for env_key, field_name in synth_int.items():
         if env_key in env_map and env_map[env_key].strip():
             synth[field_name] = int(env_map[env_key])
-    if "MAISWITCH_SYNTH_AUTO_BACKGROUND" in env_map:
-        val = env_map["MAISWITCH_SYNTH_AUTO_BACKGROUND"].strip().lower()
+    if "MAIGO_SYNTH_AUTO_BACKGROUND" in env_map:
+        val = env_map["MAIGO_SYNTH_AUTO_BACKGROUND"].strip().lower()
         synth["auto_background"] = val in {"1", "true", "yes", "on"}
     if synth:
         raw["synthesizer"] = synth

@@ -12,26 +12,26 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.routing import Route
 
-from maiswitch.api.mcp_server import build_mcp_components
-from maiswitch.api.routes_dashboard import router as dashboard_router
-from maiswitch.api.routes_sync import public_router, router as sync_router
-from maiswitch.api.state import SwitchContext, build_context
-from maiswitch.config import SwitchConfig
-from maiswitch.runtime import ClockMs, get_logger, now_ms
-from maiswitch.services.synthesizer_rules import SynthesisLLMClient
+from maigo.api.mcp_server import build_mcp_components
+from maigo.api.routes_dashboard import router as dashboard_router
+from maigo.api.routes_sync import public_router, router as sync_router
+from maigo.api.state import MaiGOContext, build_context
+from maigo.config import MaiGOConfig
+from maigo.runtime import ClockMs, get_logger, now_ms
+from maigo.services.synthesizer_rules import SynthesisLLMClient
 
 logger = get_logger("api.app")
 
 
 def create_app(
-    config: Optional[SwitchConfig] = None,
+    config: Optional[MaiGOConfig] = None,
     *,
     clock_ms: ClockMs = now_ms,
     llm_client: Optional[SynthesisLLMClient] = None,
 ) -> FastAPI:
-    """创建并装配完整的 MaiSwitch FastAPI + MCP ASGI 应用。"""
-    cfg = config or SwitchConfig()
-    ctx: SwitchContext = build_context(cfg, clock_ms=clock_ms, llm_client=llm_client)
+    """创建并装配完整的 MaiGO FastAPI + MCP ASGI 应用。"""
+    cfg = config or MaiGOConfig()
+    ctx: MaiGOContext = build_context(cfg, clock_ms=clock_ms, llm_client=llm_client)
     mcp_manager, mcp_endpoint = build_mcp_components(ctx)
 
     @asynccontextmanager
@@ -39,16 +39,16 @@ def create_app(
         await ctx.db.initialize()
         ctx.bg_synthesizer.start()
         async with mcp_manager.run():
-            logger.info(f"MaiSwitch 服务已启动: http://{cfg.host}:{cfg.port}")
+            logger.info(f"MaiGO 服务已启动: http://{cfg.host}:{cfg.port}")
             try:
                 yield
             finally:
                 await ctx.bg_synthesizer.stop()
                 await ctx.db.close()
-                logger.info("MaiSwitch 服务已安全停止")
+                logger.info("MaiGO 服务已安全停止")
 
-    app = FastAPI(title="MaiSwitch", version="0.1.0", lifespan=lifespan)
-    app.state.switch_ctx = ctx
+    app = FastAPI(title="MaiGO", version="0.1.0", lifespan=lifespan)
+    app.state.maigo_ctx = ctx
 
     app.include_router(public_router)
     app.include_router(sync_router)

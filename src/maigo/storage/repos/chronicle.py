@@ -6,8 +6,8 @@ import json
 import sqlite3
 from typing import List, Optional, Sequence
 
-from maiswitch.runtime import ClockMs, now_ms
-from maiswitch.storage.models import DailyChronicleRow
+from maigo.runtime import ClockMs, now_ms
+from maigo.storage.models import DailyChronicleRow
 
 
 def _row_to_chronicle(row: sqlite3.Row) -> DailyChronicleRow:

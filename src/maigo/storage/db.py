@@ -11,16 +11,16 @@ import sqlite3
 from pathlib import Path
 from typing import Callable, Optional, TypeVar
 
-from maiswitch.runtime import ClockMs, get_logger, now_ms
-from maiswitch.storage.migrations import apply_migrations
+from maigo.runtime import ClockMs, get_logger, now_ms
+from maigo.storage.migrations import apply_migrations
 
 logger = get_logger("storage.db")
 
 T = TypeVar("T")
 
 
-class SwitchDatabase:
-    """MaiSwitch 的 SQLite 存储连接管理器。"""
+class MaiGODatabase:
+    """MaiGO 的 SQLite 存储连接管理器。"""
 
     def __init__(self, db_path: Path | str, *, clock_ms: ClockMs = now_ms) -> None:
         self._db_path_str = str(db_path)

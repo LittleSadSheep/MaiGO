@@ -9,8 +9,8 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from maiswitch.api.routes_sync import _parse_active_actors, ingest_events
-from maiswitch.api.schemas import (
+from maigo.api.routes_sync import _parse_active_actors, ingest_events
+from maigo.api.schemas import (
     AnchorCreateIn,
     AnchorPatchIn,
     BindTokenIssueIn,
@@ -23,9 +23,9 @@ from maiswitch.api.schemas import (
     TopicCreateIn,
     TopicPatchIn,
 )
-from maiswitch.api.state import CtxDep, require_auth
-from maiswitch.services.synthesizer_rules import SLOT_LABELS, compute_day_and_slot
-from maiswitch.storage import NewExperienceEvent
+from maigo.api.state import CtxDep, require_auth
+from maigo.services.synthesizer_rules import SLOT_LABELS, compute_day_and_slot
+from maigo.storage import NewExperienceEvent
 
 router = APIRouter(prefix="/api/v1/dashboard", dependencies=[Depends(require_auth)])
 

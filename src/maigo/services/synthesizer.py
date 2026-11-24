@@ -8,11 +8,11 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
-from maiswitch.config import SynthesizerConfig
-from maiswitch.runtime import ClockMs, get_logger, now_ms
-from maiswitch.services.identity import IdentityService
-from maiswitch.services.sanitizer import sanitize_for_model
-from maiswitch.services.synthesizer_rules import (
+from maigo.config import SynthesizerConfig
+from maigo.runtime import ClockMs, get_logger, now_ms
+from maigo.services.identity import IdentityService
+from maigo.services.sanitizer import sanitize_for_model
+from maigo.services.synthesizer_rules import (
     AnchorCandidate,
     OpenAISynthesisClient,
     SlotSynthesisDraft,
@@ -22,9 +22,9 @@ from maiswitch.services.synthesizer_rules import (
     compute_day_and_slot,
     slot_rank,
 )
-from maiswitch.storage.db import SwitchDatabase
-from maiswitch.storage.models import DailyChronicleRow, ExperienceEventRow, TopicSeedRow
-from maiswitch.storage.repos import (
+from maigo.storage.db import MaiGODatabase
+from maigo.storage.models import DailyChronicleRow, ExperienceEventRow, TopicSeedRow
+from maigo.storage.repos import (
     DailyChronicleRepo,
     ExperienceEventRepo,
     PersonaAnchorRepo,
@@ -53,7 +53,7 @@ class ChronicleSynthesizer:
 
     def __init__(
         self,
-        db: SwitchDatabase,
+        db: MaiGODatabase,
         *,
         identity: IdentityService,
         config: SynthesizerConfig,
@@ -522,7 +522,7 @@ class BackgroundSynthesizer:
 
     def __init__(
         self,
-        db: SwitchDatabase,
+        db: MaiGODatabase,
         synthesizer: ChronicleSynthesizer,
         config: SynthesizerConfig,
         *,
@@ -547,7 +547,7 @@ class BackgroundSynthesizer:
         if self._task is not None and not self._task.done():
             return
         self._stopped = False
-        self._task = asyncio.create_task(self._loop(), name="maiswitch.synthesizer")
+        self._task = asyncio.create_task(self._loop(), name="maigo.synthesizer")
 
     async def stop(self) -> None:
         """停止后台合成协程并清理任务句柄。"""

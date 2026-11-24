@@ -1,4 +1,4 @@
-"""MaiSwitch HTTP REST API 与看板管理接口 Pydantic 契约定义。"""
+"""MaiGO HTTP REST API 与看板管理接口 Pydantic 契约定义。"""
 
 from __future__ import annotations
 

@@ -1,8 +1,8 @@
-"""MaiSwitch 存储包：SQLite 连接管理、迁移与仓储导出。"""
+"""MaiGO 存储包：SQLite 连接管理、迁移与仓储导出。"""
 
-from maiswitch.storage.db import SwitchDatabase
-from maiswitch.storage.migrations import apply_migrations, verify_expected_tables
-from maiswitch.storage.models import (
+from maigo.storage.db import MaiGODatabase
+from maigo.storage.migrations import apply_migrations, verify_expected_tables
+from maigo.storage.models import (
     ActorRef,
     BindTokenRow,
     BranchPresenceRow,
@@ -18,7 +18,7 @@ from maiswitch.storage.models import (
     SaveStateRow,
     TopicSeedRow,
 )
-from maiswitch.storage.schema import EXPECTED_TABLES, SCHEMA_VERSION, build_schema_sql
+from maigo.storage.schema import EXPECTED_TABLES, SCHEMA_VERSION, build_schema_sql
 
 __all__ = [
     "ActorRef",
@@ -36,7 +36,7 @@ __all__ = [
     "PersonRow",
     "SCHEMA_VERSION",
     "SaveStateRow",
-    "SwitchDatabase",
+    "MaiGODatabase",
     "TopicSeedRow",
     "apply_migrations",
     "build_schema_sql",

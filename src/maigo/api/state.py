@@ -10,12 +10,12 @@ from typing import Annotated, Any, Dict, Optional, Set
 
 from fastapi import Depends, Header, HTTPException, Query, Request
 
-from maiswitch.config import SwitchConfig
-from maiswitch.runtime import ClockMs, get_logger, now_ms
-from maiswitch.services import BackgroundSynthesizer, ChronicleSynthesizer, IdentityService, ViewProjector
-from maiswitch.services.synthesizer_rules import SynthesisLLMClient
-from maiswitch.storage import SwitchDatabase
-from maiswitch.storage.repos import (
+from maigo.config import MaiGOConfig
+from maigo.runtime import ClockMs, get_logger, now_ms
+from maigo.services import BackgroundSynthesizer, ChronicleSynthesizer, IdentityService, ViewProjector
+from maigo.services.synthesizer_rules import SynthesisLLMClient
+from maigo.storage import MaiGODatabase
+from maigo.storage.repos import (
     DailyChronicleRepo,
     ExperienceEventRepo,
     PersonaAnchorRepo,
@@ -57,11 +57,11 @@ class NotificationBroker:
 
 
 @dataclass
-class SwitchContext:
+class MaiGOContext:
     """FastAPI 与 MCP 共享的服务依赖容器。"""
 
-    config: SwitchConfig
-    db: SwitchDatabase
+    config: MaiGOConfig
+    db: MaiGODatabase
     clock_ms: ClockMs
     identity: IdentityService
     synthesizer: ChronicleSynthesizer
@@ -85,13 +85,13 @@ class SwitchContext:
 
 
 def build_context(
-    config: SwitchConfig,
+    config: MaiGOConfig,
     *,
     clock_ms: ClockMs = now_ms,
     llm_client: Optional[SynthesisLLMClient] = None,
-) -> SwitchContext:
+) -> MaiGOContext:
     """组装核心依赖容器与后台编年调度器。"""
-    db = SwitchDatabase(config.db_path, clock_ms=clock_ms)
+    db = MaiGODatabase(config.db_path, clock_ms=clock_ms)
     identity = IdentityService(db, identity_salt=config.identity_salt, clock_ms=clock_ms)
     synthesizer = ChronicleSynthesizer(
         db,
@@ -122,7 +122,7 @@ def build_context(
         recent_window_ms=config.synthesizer.recent_window_ms,
         clock_ms=clock_ms,
     )
-    return SwitchContext(
+    return MaiGOContext(
         config=config,
         db=db,
         clock_ms=clock_ms,
@@ -134,12 +134,12 @@ def build_context(
     )
 
 
-def get_ctx(request: Request) -> SwitchContext:
+def get_ctx(request: Request) -> MaiGOContext:
     """从 FastAPI app.state 获取上下文。"""
-    return request.app.state.switch_ctx
+    return request.app.state.maigo_ctx
 
 
-CtxDep = Annotated[SwitchContext, Depends(get_ctx)]
+CtxDep = Annotated[MaiGOContext, Depends(get_ctx)]
 
 
 def verify_token_value(expected_token: str, *, authorization: Optional[str], query_token: Optional[str] = None) -> bool:

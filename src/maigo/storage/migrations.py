@@ -5,8 +5,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Callable, List, Tuple
 
-from maiswitch.runtime import ClockMs, get_logger, now_ms
-from maiswitch.storage.schema import EXPECTED_TABLES, SCHEMA_VERSION, build_schema_sql
+from maigo.runtime import ClockMs, get_logger, now_ms
+from maigo.storage.schema import EXPECTED_TABLES, SCHEMA_VERSION, build_schema_sql
 
 logger = get_logger("storage.migrations")
 

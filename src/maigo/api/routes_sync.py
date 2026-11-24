@@ -10,7 +10,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-from maiswitch.api.schemas import (
+from maigo.api.schemas import (
     ActiveSessionOut,
     ActorCardOut,
     AnchorProjectionOut,
@@ -29,10 +29,10 @@ from maiswitch.api.schemas import (
     TopicConsumeIn,
     TopicProjectionOut,
 )
-from maiswitch.api.state import CtxDep, require_auth
-from maiswitch.runtime import get_logger
-from maiswitch.services.sanitizer import normalize_visibility
-from maiswitch.storage import ActorRef, NewExperienceEvent
+from maigo.api.state import CtxDep, require_auth
+from maigo.runtime import get_logger
+from maigo.services.sanitizer import normalize_visibility
+from maigo.storage import ActorRef, NewExperienceEvent
 
 logger = get_logger("api.sync")
 
@@ -43,7 +43,7 @@ public_router = APIRouter()
 @public_router.get("/health")
 async def health_check() -> Dict[str, Any]:
     """健康检查端点（无需令牌，供进程守护与负载均衡探活）。"""
-    return {"ok": True, "service": "maiswitch"}
+    return {"ok": True, "service": "maigo"}
 
 
 def _default_visibility(ev: EventIn) -> str:
@@ -254,7 +254,7 @@ async def recall_life_view(
     limit: int = Query(default=5, ge=1, le=20),
     target_visibility: str = Query(default="public"),
 ) -> Dict[str, Any]:
-    """按关键词检索跨端经历与立场锚点（HTTP 接口，与 MCP ``switch_recall_life`` 同源）。"""
+    """按关键词检索跨端经历与立场锚点（HTTP 接口，与 MCP ``maigo_recall_life`` 同源）。"""
     vis = normalize_visibility(target_visibility, default="public")
     text = await ctx.projector.recall_life(query=query.strip(), days=days, limit=limit, target_visibility=vis)
     return {"ok": True, "text": text}

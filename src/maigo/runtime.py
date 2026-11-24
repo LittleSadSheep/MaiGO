@@ -19,13 +19,13 @@ def now_ms() -> int:
 
 def get_logger(name: str) -> logging.Logger:
     """获取带模块命名空间的日志记录器。"""
-    return logging.getLogger(f"maiswitch.{name}")
+    return logging.getLogger(f"maigo.{name}")
 
 
 def setup_logging(level: str = "INFO") -> None:
     """初始化全局日志输出格式与级别（幂等配置基础 handler）。"""
     numeric = getattr(logging, level.upper(), logging.INFO)
-    root = logging.getLogger("maiswitch")
+    root = logging.getLogger("maigo")
     root.setLevel(numeric)
     if not root.handlers:
         handler = logging.StreamHandler()

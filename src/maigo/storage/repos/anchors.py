@@ -10,6 +10,7 @@ from maigo.storage.models import PersonaAnchorRow
 
 
 def _row_to_anchor(row: sqlite3.Row) -> PersonaAnchorRow:
+    keys = row.keys()
     return PersonaAnchorRow(
         id=int(row["id"]),
         anchor_type=str(row["anchor_type"]),
@@ -24,6 +25,9 @@ def _row_to_anchor(row: sqlite3.Row) -> PersonaAnchorRow:
         note=str(row["note"]),
         created_at_ms=int(row["created_at_ms"]),
         updated_at_ms=int(row["updated_at_ms"]),
+        superseded_by_id=(
+            int(row["superseded_by_id"]) if "superseded_by_id" in keys and row["superseded_by_id"] is not None else None
+        ),
     )
 
 
@@ -152,21 +156,47 @@ class PersonaAnchorRepo:
         content: Optional[str] = None,
         status: Optional[str] = None,
         note: Optional[str] = None,
+        superseded_by_id: Optional[int] = None,
     ) -> Optional[PersonaAnchorRow]:
-        """部分更新锚点内容、状态（如兑现 closed / 误记 void）或备注。"""
+        """部分更新锚点内容、状态（如兑现 closed / 误记 void / 演化 superseded / 陈年 stale）或备注。"""
         existing = self.get_by_id(conn, anchor_id)
         if existing is None:
             return None
         new_content = existing.content if content is None else content
         new_status = existing.status if status is None else status
         new_note = existing.note if note is None else note
+        new_superseded_by = existing.superseded_by_id if superseded_by_id is None else superseded_by_id
         now = int(self._clock_ms())
         conn.execute(
-            "UPDATE persona_anchors SET content = ?, status = ?, note = ?, updated_at_ms = ? WHERE id = ?",
-            (new_content, new_status, new_note, now, int(anchor_id)),
+            """
+            UPDATE persona_anchors
+            SET content = ?, status = ?, note = ?, superseded_by_id = ?, updated_at_ms = ?
+            WHERE id = ?
+            """,
+            (new_content, new_status, new_note, new_superseded_by, now, int(anchor_id)),
         )
         conn.commit()
         return self.get_by_id(conn, anchor_id)
+
+    def supersede(self, conn: sqlite3.Connection, old_id: int, new_id: int) -> Optional[PersonaAnchorRow]:
+        """将旧立场或旧约定标记为已被新记录替代，保留立场演化链。"""
+        if int(old_id) == int(new_id):
+            return None
+        return self.update(conn, old_id, status="superseded", superseded_by_id=int(new_id))
+
+    def mark_stale_promises(self, conn: sqlite3.Connection, *, before_ms: int) -> int:
+        """将超过阈值天数的未兑现约定自动降权为 stale，保留检索而不挤占慢层提示词。"""
+        now = int(self._clock_ms())
+        cursor = conn.execute(
+            """
+            UPDATE persona_anchors
+            SET status = 'stale', updated_at_ms = ?
+            WHERE anchor_type = 'promise' AND status = 'open' AND created_at_ms < ?
+            """,
+            (now, int(before_ms)),
+        )
+        conn.commit()
+        return int(cursor.rowcount)
 
     def delete(self, conn: sqlite3.Connection, anchor_id: int) -> bool:
         """物理删除指定锚点。"""

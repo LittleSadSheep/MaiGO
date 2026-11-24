@@ -12,6 +12,7 @@ from maigo.storage.models import DailyChronicleRow
 
 def _row_to_chronicle(row: sqlite3.Row) -> DailyChronicleRow:
     raw_ids = json.loads(row["source_event_ids_json"] or "[]")
+    keys = row.keys()
     return DailyChronicleRow(
         id=int(row["id"]),
         day_key=str(row["day_key"]),
@@ -23,6 +24,8 @@ def _row_to_chronicle(row: sqlite3.Row) -> DailyChronicleRow:
         source_event_ids=[int(x) for x in raw_ids],
         sealed_at_ms=int(row["sealed_at_ms"]) if row["sealed_at_ms"] is not None else None,
         updated_at_ms=int(row["updated_at_ms"]),
+        mood_tag=str(row["mood_tag"]) if "mood_tag" in keys else "",
+        unfinished_thread=str(row["unfinished_thread"]) if "unfinished_thread" in keys else "",
     )
 
 
@@ -51,6 +54,8 @@ class DailyChronicleRepo:
         public_body: str,
         group_body: str,
         source_event_ids: Sequence[int],
+        mood_tag: str = "",
+        unfinished_thread: str = "",
     ) -> DailyChronicleRow:
         """写入或更新某时段纪要；若该时段已封存且本次未强制重开，保持封存时刻连续性。"""
         now = int(self._clock_ms())
@@ -65,13 +70,15 @@ class DailyChronicleRepo:
             """
             INSERT INTO daily_chronicles (
                 day_key, slot_key, status, body, public_body, group_body,
-                source_event_ids_json, sealed_at_ms, updated_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                mood_tag, unfinished_thread, source_event_ids_json, sealed_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(day_key, slot_key) DO UPDATE SET
                 status = excluded.status,
                 body = excluded.body,
                 public_body = excluded.public_body,
                 group_body = excluded.group_body,
+                mood_tag = excluded.mood_tag,
+                unfinished_thread = excluded.unfinished_thread,
                 source_event_ids_json = excluded.source_event_ids_json,
                 sealed_at_ms = COALESCE(daily_chronicles.sealed_at_ms, excluded.sealed_at_ms),
                 updated_at_ms = excluded.updated_at_ms
@@ -83,6 +90,8 @@ class DailyChronicleRepo:
                 body,
                 public_body,
                 group_body,
+                mood_tag.strip(),
+                unfinished_thread.strip(),
                 json.dumps([int(eid) for eid in source_event_ids]),
                 sealed_at_ms,
                 now,

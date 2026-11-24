@@ -53,12 +53,44 @@ def _row_to_event(row: sqlite3.Row) -> ExperienceEventRow:
     )
 
 
-def _fts_literal(query: str) -> str:
-    """将自由查询文本转义为安全的 FTS5 短语，避免标点语法报错。"""
-    cleaned = query.replace('"', " ").strip()
-    if not cleaned:
-        return ""
-    return f'"{cleaned}"'
+def _trigram_query(query: str) -> str:
+    """为至少包含一个 3 字符词段的查询构造 FTS5 trigram 短语表达，提升中文局部匹配。"""
+    tokens = [tok.replace('"', "").strip() for tok in query.split()]
+    valid = [f'"{tok}"' for tok in tokens if len(tok) >= 3]
+    if valid:
+        return " OR ".join(valid)
+    cleaned = query.replace('"', "").strip()
+    return f'"{cleaned}"' if len(cleaned) >= 3 else ""
+
+
+def _query_fts_table(
+    conn: sqlite3.Connection,
+    *,
+    fts_table: str,
+    match_expr: str,
+    since_ms: int,
+    vis_list: Sequence[str],
+    limit: int,
+) -> List[ExperienceEventRow]:
+    if not match_expr:
+        return []
+    vis_placeholders = ",".join("?" for _ in vis_list)
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT e.* FROM {fts_table} f
+            JOIN experience_events e ON e.id = f.rowid
+            WHERE {fts_table} MATCH ?
+              AND e.occurred_at_ms >= ?
+              AND e.visibility IN ({vis_placeholders})
+            ORDER BY rank, e.occurred_at_ms DESC
+            LIMIT ?
+            """,
+            (match_expr, int(since_ms), *vis_list, max(1, int(limit))),
+        ).fetchall()
+        return [_row_to_event(row) for row in rows]
+    except sqlite3.OperationalError:
+        return []
 
 
 class ExperienceEventRepo:
@@ -245,28 +277,36 @@ class ExperienceEventRepo:
             return self.list_recent(conn, since_ms=since_ms, visibilities=vis_list, limit=limit)
 
         results: Dict[int, Tuple[int, ExperienceEventRow]] = {}
-        fts_query = _fts_literal(stripped)
-        if fts_query:
-            try:
-                fts_rows = conn.execute(
-                    f"""
-                    SELECT e.* FROM experience_events_fts f
-                    JOIN experience_events e ON e.id = f.rowid
-                    WHERE experience_events_fts MATCH ?
-                      AND e.occurred_at_ms >= ?
-                      AND e.visibility IN ({vis_placeholders})
-                    ORDER BY rank, e.occurred_at_ms DESC
-                    LIMIT ?
-                    """,
-                    (fts_query, int(since_ms), *vis_list, max(1, int(limit))),
-                ).fetchall()
-                for idx, row in enumerate(fts_rows):
-                    ev = _row_to_event(row)
-                    results[ev.id] = (idx, ev)
-            except sqlite3.OperationalError:
-                pass
+        cleaned = stripped.replace('"', " ").strip()
+        fts_query = f'"{cleaned}"' if cleaned else ""
+        rank_cursor = 0
 
-        # 中文连续短语在 unicode61 分词下可能整体切词，补一层 LIKE 子串精确召回
+        for ev in _query_fts_table(
+            conn,
+            fts_table="experience_events_fts",
+            match_expr=fts_query,
+            since_ms=since_ms,
+            vis_list=vis_list,
+            limit=limit,
+        ):
+            if ev.id not in results:
+                results[ev.id] = (rank_cursor, ev)
+                rank_cursor += 1
+
+        # 补一层 trigram 中文任意子串召回（3 字及以上连续词段命中）
+        for ev in _query_fts_table(
+            conn,
+            fts_table="experience_events_trigram",
+            match_expr=_trigram_query(stripped),
+            since_ms=since_ms,
+            vis_list=vis_list,
+            limit=limit,
+        ):
+            if ev.id not in results:
+                results[ev.id] = (rank_cursor, ev)
+                rank_cursor += 1
+
+        # 补一层 LIKE 子串精确召回（兜底 1~2 字超短中文词）
         like_pattern = f"%{stripped}%"
         like_rows = conn.execute(
             f"""
@@ -279,11 +319,11 @@ class ExperienceEventRepo:
             """,
             (int(since_ms), *vis_list, like_pattern, like_pattern, like_pattern, like_pattern, max(1, int(limit))),
         ).fetchall()
-        offset = len(results)
-        for idx, row in enumerate(like_rows):
+        for row in like_rows:
             ev = _row_to_event(row)
             if ev.id not in results:
-                results[ev.id] = (offset + idx, ev)
+                results[ev.id] = (rank_cursor, ev)
+                rank_cursor += 1
 
         ordered = sorted(results.values(), key=lambda pair: (pair[0], -pair[1].occurred_at_ms))
         return [pair[1] for pair in ordered[: max(1, int(limit))]]

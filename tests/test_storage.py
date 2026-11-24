@@ -16,7 +16,9 @@ from maigo.storage import (
 )
 from maigo.storage.repos import (
     DailyChronicleRepo,
+    EmbeddingRepo,
     ExperienceEventRepo,
+    LifeArcRepo,
     PersonaAnchorRepo,
     PersonRepo,
     SessionRepo,
@@ -46,11 +48,21 @@ def test_config_env_overrides(tmp_path: Path) -> None:
             "MAIGO_PORT": "8769",
             "MAIGO_AUTH_TOKEN": "demo-token",
             "MAIGO_SYNTH_BATCH_THRESHOLD": "5",
+            "MAIGO_SYNTH_STALE_PROMISE_DAYS": "14",
+            "MAIGO_EMBEDDING_BASE_URL": "http://127.0.0.1:9999/v1",
+            "MAIGO_EMBEDDING_MODEL": "text-embedding-demo",
+            "MAIGO_BACKUP_KEEP_DAYS": "10",
+            "MAIGO_BACKUP_AUTO_DAILY": "false",
         },
     )
     assert cfg.port == 8769
     assert cfg.auth_token == "demo-token"
     assert cfg.synthesizer.batch_event_threshold == 5
+    assert cfg.synthesizer.stale_promise_days == 14
+    assert cfg.embedding.base_url == "http://127.0.0.1:9999/v1"
+    assert cfg.embedding.model == "text-embedding-demo"
+    assert cfg.backup.keep_days == 10
+    assert cfg.backup.auto_daily is False
 
 
 async def test_migrations_idempotent_and_wal(tmp_path: Path) -> None:
@@ -242,4 +254,142 @@ async def test_cascade_delete_and_other_repos(tmp_path: Path) -> None:
         assert session_repo.list_active_checkouts(conn) == []
 
     await db.run(_run_ops)
+    await db.close()
+
+
+async def test_v1_to_v2_migration_arcs_embeddings_and_trigram(tmp_path: Path) -> None:
+    """校验老版本 v1 SQLite 数据库可无损迁移至 v2，并补全 trigram/主线/向量/锚点演化能力。"""
+    clock = FakeClock()
+    db_file = tmp_path / "legacy_v1.sqlite3"
+    raw_conn = sqlite3.connect(db_file)
+    raw_conn.executescript(
+        """
+        CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at_ms INTEGER NOT NULL);
+        INSERT INTO schema_migrations (version, applied_at_ms) VALUES (1, 1000);
+        CREATE TABLE experience_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idempotency_key TEXT NOT NULL,
+            branch_id TEXT NOT NULL,
+            occurred_at_ms INTEGER NOT NULL,
+            ingested_at_ms INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            actor_role TEXT NOT NULL,
+            visibility TEXT NOT NULL,
+            context_scope TEXT NOT NULL DEFAULT '',
+            actors_json TEXT NOT NULL DEFAULT '[]',
+            summary TEXT NOT NULL,
+            verbatim TEXT NOT NULL DEFAULT '',
+            reaction TEXT NOT NULL DEFAULT '',
+            save_id TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            synthesized_at_ms INTEGER,
+            UNIQUE (branch_id, idempotency_key)
+        );
+        CREATE TABLE daily_chronicles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            day_key TEXT NOT NULL,
+            slot_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            public_body TEXT NOT NULL DEFAULT '',
+            group_body TEXT NOT NULL DEFAULT '',
+            source_event_ids_json TEXT NOT NULL DEFAULT '[]',
+            sealed_at_ms INTEGER,
+            updated_at_ms INTEGER NOT NULL,
+            UNIQUE (day_key, slot_key)
+        );
+        CREATE TABLE persona_anchors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            anchor_type TEXT NOT NULL,
+            content TEXT NOT NULL,
+            verbatim TEXT NOT NULL DEFAULT '',
+            source_event_id INTEGER REFERENCES experience_events(id) ON DELETE SET NULL,
+            branch_id TEXT NOT NULL,
+            visibility TEXT NOT NULL DEFAULT 'public',
+            save_id TEXT,
+            target_person_id INTEGER,
+            status TEXT NOT NULL CHECK (status IN ('active', 'open', 'closed', 'void')),
+            note TEXT NOT NULL DEFAULT '',
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+        INSERT INTO experience_events (idempotency_key, branch_id, occurred_at_ms, ingested_at_ms, kind, actor_role, visibility, summary, verbatim)
+        VALUES ('old-1', 'bilibili_ops', 10000, 10000, 'browsed', 'self', 'public', '下午看了粘土小甲鱼手工视频', '好呆呀');
+        INSERT INTO daily_chronicles (day_key, slot_key, status, body, public_body, group_body, source_event_ids_json, sealed_at_ms, updated_at_ms)
+        VALUES ('2026-11-23', 'afternoon', 'sealed', '昨日旧纪要', '昨日旧纪要', '昨日旧纪要', '[1]', 20000, 20000);
+        INSERT INTO persona_anchors (anchor_type, content, verbatim, source_event_id, branch_id, visibility, status, created_at_ms, updated_at_ms)
+        VALUES ('stance', '早年不太爱吃香菜', '我不怎么吃香菜', 1, 'maibot', 'public', 'active', 10000, 10000);
+        INSERT INTO persona_anchors (anchor_type, content, verbatim, source_event_id, branch_id, visibility, status, created_at_ms, updated_at_ms)
+        VALUES ('promise', '三十天前的老约定', '下次一定补发照片', 1, 'maibot', 'public', 'open', 10000, 10000);
+        """
+    )
+    raw_conn.commit()
+    raw_conn.close()
+
+    db = MaiGODatabase(db_file, clock_ms=clock)
+    await db.initialize()
+    event_repo = ExperienceEventRepo(clock_ms=clock)
+    chronicle_repo = DailyChronicleRepo(clock_ms=clock)
+    anchor_repo = PersonaAnchorRepo(clock_ms=clock)
+    arc_repo = LifeArcRepo(clock_ms=clock)
+    emb_repo = EmbeddingRepo(clock_ms=clock)
+
+    def _verify(conn: sqlite3.Connection) -> None:
+        # 1. 历史数据无损保留且 3 字 trigram 索引已重建可召回（旧 unicode61 整串无法切出“小甲鱼”）
+        hits = event_repo.search(conn, query="小甲鱼", since_ms=0, visibilities=["public"], limit=5)
+        assert len(hits) == 1 and "粘土小甲鱼" in hits[0].summary
+
+        old_slot = chronicle_repo.get_slot(conn, day_key="2026-11-23", slot_key="afternoon")
+        assert old_slot is not None and old_slot.mood_tag == ""
+
+        # 2. 新立场替代旧立场 + 陈年承诺降权转 stale
+        new_stance = anchor_repo.create(
+            conn,
+            anchor_type="stance",
+            content="现在火锅也能吃一点香菜了",
+            verbatim="最近吃火锅居然不嫌香菜了",
+            source_event_id=1,
+            branch_id="amaidesu",
+            visibility="public",
+        )
+        sup = anchor_repo.supersede(conn, 1, new_stance.id)
+        assert sup is not None and sup.status == "superseded" and sup.superseded_by_id == new_stance.id
+        stale_cnt = anchor_repo.mark_stale_promises(conn, before_ms=50_000)
+        assert stale_cnt == 1
+        stale_row = anchor_repo.get_by_id(conn, 2)
+        assert stale_row is not None and stale_row.status == "stale"
+
+        # 3. 温层主线 upsert 与向量仓储读写
+        arc1 = arc_repo.upsert_or_create(
+            conn,
+            title="海洋存档灯塔建设",
+            summary="连续两天和大家一起搭海边灯塔与港口",
+            public_summary="连续两天在游戏里搭海边灯塔与港口",
+            save_id="save-ocean-1",
+            mood_hint="兴致很高",
+            source_event_ids=[1],
+        )
+        arc2 = arc_repo.upsert_or_create(
+            conn,
+            title="海洋存档灯塔建设",
+            summary="灯塔终于封顶通电",
+            save_id="save-ocean-1",
+            source_event_ids=[2],
+        )
+        assert arc1.id == arc2.id and arc2.source_event_ids == [1, 2]
+        assert len(arc_repo.search(conn, query="灯塔", visibilities=["public"])) == 1
+
+        emb_repo.upsert(
+            conn,
+            item_type="event",
+            item_id=1,
+            model="demo-emb",
+            dims=3,
+            vector_blob=b"\x00" * 12,
+            content_hash="abc123",
+        )
+        assert emb_repo.get_hash(conn, item_type="event", item_id=1, model="demo-emb") == "abc123"
+        assert emb_repo.count_all(conn) == 1
+
+    await db.run(_verify)
     await db.close()

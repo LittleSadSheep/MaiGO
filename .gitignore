@@ -1,0 +1,54 @@
+# Python 字节码与构建产物
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# 虚拟环境与工具缓存
+.venv/
+venv/
+env/
+.env
+.env.*
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# 运行时数据、日志与本地配置（含密钥）
+/data/
+/logs/
+/secrets/
+/config/
+config.toml
+config.toml.backup*
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# 前端看板构建依赖与产物
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.vite/
+dashboard/tsconfig.tsbuildinfo
+
+# 本地机器规则、工作树协调与临时草稿（不入版本库）
+AGENTS.local.md
+/worktrees.md
+/docs/tmp/
+/tmp/
+.claude/settings.local.json
+.cursor/
+.vscode/
+.DS_Store
+nul

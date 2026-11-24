@@ -32,12 +32,19 @@
             <div class="row" style="justify-content: space-between; margin-bottom: 4px">
               <div class="row">
                 <span class="badge info">#{{ anc.id }} · {{ anc.anchor_type === "promise" ? "约定" : "立场" }}</span>
-                <span class="badge" :class="anc.status === 'closed' ? 'ok' : anc.status === 'void' ? 'danger' : 'warn'">
-                  {{ anc.status }}
+                <span class="badge" :class="anchorBadgeClass(anc.status)">
+                  {{ anchorStatusLabel(anc) }}
                 </span>
                 <span class="badge">{{ anc.branch_id }}</span>
               </div>
               <div class="row">
+                <button
+                  v-if="['stale', 'closed', 'void', 'superseded'].includes(anc.status)"
+                  class="ghost"
+                  @click="reactivateAnchor(anc)"
+                >
+                  重新激活
+                </button>
                 <button
                   v-if="anc.status !== 'closed'"
                   class="ghost"
@@ -117,6 +124,7 @@ interface AnchorItem {
   verbatim: string;
   branch_id: string;
   status: string;
+  superseded_by_id?: number | null;
 }
 
 interface TopicItem {
@@ -145,6 +153,26 @@ const topicForm = reactive({
   summary: "",
   reaction: "",
 });
+
+function anchorBadgeClass(status: string): string {
+  if (status === "closed") return "ok";
+  if (status === "void") return "danger";
+  if (status === "superseded") return "info";
+  if (status === "stale") return "";
+  return "warn";
+}
+
+function anchorStatusLabel(anc: AnchorItem): string {
+  if (anc.status === "closed") return "已兑现";
+  if (anc.status === "void") return "已作废";
+  if (anc.status === "superseded") {
+    return anc.superseded_by_id ? `已演进→#${anc.superseded_by_id}` : "已演进";
+  }
+  if (anc.status === "stale") return "已过期";
+  if (anc.status === "open") return "待兑现";
+  if (anc.status === "active") return "生效中";
+  return anc.status;
+}
 
 async function load() {
   err.value = "";
@@ -184,6 +212,11 @@ async function updateAnchorStatus(id: number, status: string) {
   } catch (e) {
     err.value = (e as Error).message;
   }
+}
+
+async function reactivateAnchor(anc: AnchorItem) {
+  const nextStatus = anc.anchor_type === "promise" ? "open" : "active";
+  await updateAnchorStatus(anc.id, nextStatus);
 }
 
 async function deleteAnchor(id: number) {

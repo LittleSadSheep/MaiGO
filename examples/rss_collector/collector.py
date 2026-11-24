@@ -1,7 +1,7 @@
-"""MaiGO 独立日常 RSS/Atom 巡检投喂脚本（零新增外部依赖，仅用标准库 + httpx）。
+"""MaiGO 独立的 RSS/Atom 订阅采集脚本（仅使用 Python 标准库与 httpx）。
 
-定期抓取订阅源的新内容，生成第一人称观后感并上报 ``POST /api/v1/events``，
-让虚拟主播像真人刷手机关注列表一样自然沉淀日常见闻与直播杂谈话头。
+定期抓取配置的订阅源更新，生成简短的第一人称评价，并以 ``browsed`` 事件
+上报 ``POST /api/v1/events``，作为各接入端日常话题来源。
 """
 
 from __future__ import annotations
@@ -38,8 +38,8 @@ class FeedSource:
 
 
 @dataclass(frozen=True)
-class FeederLLMConfig:
-    """可选观后感生成模型配置。"""
+class CollectorLLMConfig:
+    """可选评价生成模型配置。"""
 
     base_url: str = ""
     api_key: str = ""
@@ -48,17 +48,17 @@ class FeederLLMConfig:
 
 
 @dataclass(frozen=True)
-class FeederConfig:
-    """日常巡检投喂器根配置。"""
+class CollectorConfig:
+    """RSS 订阅采集器配置。"""
 
     maigo_url: str = "http://127.0.0.1:8768"
     auth_token: str = ""
-    branch_id: str = "daily_feeder"
-    state_file: str = "data/daily_feeder_seen.json"
+    branch_id: str = "rss_collector"
+    state_file: str = "data/rss_collector_seen.json"
     interval_seconds: int = 1800
     max_items_per_feed: int = 3
     persona_name: str = "麦麦"
-    llm: FeederLLMConfig = field(default_factory=FeederLLMConfig)
+    llm: CollectorLLMConfig = field(default_factory=CollectorLLMConfig)
     feeds: List[FeedSource] = field(default_factory=list)
 
 
@@ -75,8 +75,8 @@ class FeedItem:
 
 
 @dataclass(frozen=True)
-class FeederRunResult:
-    """单轮巡检执行统计。"""
+class CollectorRunResult:
+    """单轮采集执行统计。"""
 
     fetched_items: int = 0
     new_items: int = 0
@@ -201,12 +201,12 @@ def parse_feed_xml(xml_text: str, *, source_name: str = "", tag: str = "") -> Li
     return items
 
 
-def load_feeder_config(path: Path | str) -> FeederConfig:
-    """从 TOML 文件加载巡检配置，并支持 ``MAIGO_AUTH_TOKEN`` 环境变量覆盖令牌。"""
+def load_collector_config(path: Path | str) -> CollectorConfig:
+    """从 TOML 文件加载采集配置，并支持 ``MAIGO_AUTH_TOKEN`` 环境变量覆盖令牌。"""
     cfg_path = Path(path)
     raw: Dict[str, Any] = tomllib.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
     llm_raw = raw.get("llm") or {}
-    llm_cfg = FeederLLMConfig(
+    llm_cfg = CollectorLLMConfig(
         base_url=str(llm_raw.get("base_url") or ""),
         api_key=str(llm_raw.get("api_key") or os.environ.get("MAIGO_SYNTH_API_KEY", "")),
         model=str(llm_raw.get("model") or ""),
@@ -225,11 +225,11 @@ def load_feeder_config(path: Path | str) -> FeederConfig:
             )
         )
     token = str(raw.get("auth_token") or os.environ.get("MAIGO_AUTH_TOKEN", ""))
-    return FeederConfig(
+    return CollectorConfig(
         maigo_url=str(raw.get("maigo_url") or "http://127.0.0.1:8768").rstrip("/"),
         auth_token=token,
-        branch_id=str(raw.get("branch_id") or "daily_feeder"),
-        state_file=str(raw.get("state_file") or "data/daily_feeder_seen.json"),
+        branch_id=str(raw.get("branch_id") or "rss_collector"),
+        state_file=str(raw.get("state_file") or "data/rss_collector_seen.json"),
         interval_seconds=max(30, int(raw.get("interval_seconds") or 1800)),
         max_items_per_feed=max(1, int(raw.get("max_items_per_feed") or 3)),
         persona_name=str(raw.get("persona_name") or "麦麦"),
@@ -265,19 +265,19 @@ def save_seen_keys(state_path: Path, seen: Dict[str, int]) -> None:
 
 
 def build_rule_reaction(item: FeedItem, *, persona_name: str = "麦麦") -> str:
-    """在未配置小模型时按标签与标题产出自然的日常观后感。"""
+    """未配置生成模型时，按标签与标题生成规则评价。"""
     if item.tag:
-        return f"看到{item.tag}向的内容《{item.title}》，觉得蛮有趣的，晚点闲聊可以顺带提一嘴"
-    return f"刚刷到一篇《{item.title}》，{persona_name}觉得还挺新鲜，先记在小本本上"
+        return f"看到{item.tag}相关内容《{item.title}》，后续交流时可以顺便聊到"
+    return f"浏览了一篇《{item.title}》，{persona_name}觉得很有参考价值，已记录下来"
 
 
 async def generate_reaction(
     item: FeedItem,
     *,
-    config: FeederConfig,
+    config: CollectorConfig,
     http_client: Optional[httpx.AsyncClient] = None,
 ) -> str:
-    """优先调用可选 OpenAI 兼容模型写一句第一人称随想，不可用时回落规则感想。"""
+    """调用可选 OpenAI 兼容模型写一句第一人称评价，不可用时回落规则评价。"""
     llm = config.llm
     if not llm.base_url.strip() or not llm.model.strip():
         return build_rule_reaction(item, persona_name=config.persona_name)
@@ -286,11 +286,11 @@ async def generate_reaction(
     if llm.api_key:
         headers["Authorization"] = f"Bearer {llm.api_key}"
     prompt = (
-        f"你是{config.persona_name}，刚随手刷到一条关注动态：\n"
-        f"来源：{item.source_name or '日常资讯'}（{item.tag or '杂项'}）\n"
+        f"你是{config.persona_name}，刚浏览到一条订阅内容：\n"
+        f"来源：{item.source_name or '订阅资讯'}（{item.tag or '综合'}）\n"
         f"标题：{item.title}\n"
         f"摘要：{item.summary}\n"
-        "请用一句自然口语写出你的真实感想或吐槽（不超过 45 个字，不带标题前缀）。"
+        "请用一句简洁口吻写出你的评价或感想（不超过 45 个字，不带标题前缀）。"
     )
     payload = {
         "model": llm.model,
@@ -338,7 +338,7 @@ def build_event_payload(
     if len(summary_text) > 360:
         summary_text = summary_text[:359].rstrip() + "…"
     return {
-        "idempotency_key": f"feeder-{item_key}",
+        "idempotency_key": f"collector-{item_key}",
         "branch_id": branch_id,
         "occurred_at_ms": int(occurred_at_ms),
         "kind": "browsed",
@@ -370,14 +370,14 @@ async def _fetch_feed_xml(url: str, *, client: httpx.AsyncClient) -> str:
 
 
 async def run_once(
-    config: FeederConfig,
+    config: CollectorConfig,
     *,
     dry_run: bool = False,
     maigo_client: Optional[httpx.AsyncClient] = None,
     feed_client: Optional[httpx.AsyncClient] = None,
     now_ms_fn: Callable[[], int] = lambda: int(time.time() * 1000),
-) -> FeederRunResult:
-    """执行一轮订阅巡检，抽取新增条目并投喂到 MaiGO。"""
+) -> CollectorRunResult:
+    """执行一轮订阅采集，抽取新增条目并上报到 MaiGO。"""
     state_path = Path(config.state_file)
     seen = await asyncio.to_thread(load_seen_keys, state_path)
 
@@ -393,7 +393,7 @@ async def run_once(
                 xml_text = await _fetch_feed_xml(feed.url, client=active_feed_client)
                 parsed = parse_feed_xml(xml_text, source_name=feed.name, tag=feed.tag)
             except Exception as exc:
-                print(f"[daily_feeder] 拉取订阅源失败 ({feed.url}): {exc}", file=sys.stderr)
+                print(f"[rss_collector] 拉取订阅源失败 ({feed.url}): {exc}", file=sys.stderr)
                 continue
 
             fetched_items += len(parsed)
@@ -420,7 +420,7 @@ async def run_once(
             await active_feed_client.aclose()
 
     if not candidate_events or dry_run:
-        return FeederRunResult(
+        return CollectorRunResult(
             fetched_items=fetched_items,
             new_items=len(candidate_events),
             submitted_events=0,
@@ -453,7 +453,7 @@ async def run_once(
         seen[key] = ts_now
     await asyncio.to_thread(save_seen_keys, state_path, seen)
 
-    return FeederRunResult(
+    return CollectorRunResult(
         fetched_items=fetched_items,
         new_items=len(candidate_events),
         submitted_events=len(candidate_events),
@@ -465,19 +465,19 @@ async def run_once(
 
 
 async def _run_loop(args: argparse.Namespace) -> int:
-    cfg = load_feeder_config(args.config)
+    cfg = load_collector_config(args.config)
     interval = int(args.interval) if args.interval is not None else cfg.interval_seconds
 
     while True:
         res = await run_once(cfg, dry_run=bool(args.dry_run))
         mode_tag = "DRY-RUN" if res.dry_run else "PUSH"
         print(
-            f"[daily_feeder] {mode_tag}: fetched={res.fetched_items}, "
+            f"[rss_collector] {mode_tag}: fetched={res.fetched_items}, "
             f"new={res.new_items}, accepted={res.accepted}, dedup={res.deduplicated}"
         )
         if args.dry_run:
             for ev in res.preview_events:
-                print(f"  - {ev['summary']} | 感想: {ev['reaction']}")
+                print(f"  - {ev['summary']} | 评价: {ev['reaction']}")
         if args.once:
             return 0
         await asyncio.sleep(max(5, interval))
@@ -485,11 +485,11 @@ async def _run_loop(args: argparse.Namespace) -> int:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """命令行入口：支持 ``--config``、``--once``、``--dry-run`` 与 ``--interval``。"""
-    parser = argparse.ArgumentParser(description="MaiGO 日常 RSS/Atom 巡检投喂脚本")
-    parser.add_argument("--config", default="examples/daily_feeder/feeds.example.toml", help="TOML 配置文件路径")
-    parser.add_argument("--once", action="store_true", help="仅执行一轮巡检后退出")
-    parser.add_argument("--dry-run", action="store_true", help="仅解析和预览待上报事件，不写入状态也不调用服务端")
-    parser.add_argument("--interval", type=int, default=None, help="覆盖常驻巡检间隔秒数")
+    parser = argparse.ArgumentParser(description="MaiGO RSS/Atom 订阅采集脚本")
+    parser.add_argument("--config", default="examples/rss_collector/feeds.example.toml", help="TOML 配置文件路径")
+    parser.add_argument("--once", action="store_true", help="仅执行一轮采集后退出")
+    parser.add_argument("--dry-run", action="store_true", help="仅解析并预览待上报事件，不写本地状态也不提交服务端")
+    parser.add_argument("--interval", type=int, default=None, help="覆盖轮询采集间隔秒数")
     args = parser.parse_args(argv)
     try:
         return asyncio.run(_run_loop(args))

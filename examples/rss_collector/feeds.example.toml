@@ -1,16 +1,16 @@
-# MaiGO 日常 RSS/Atom 巡检投喂脚本示例配置（可复制为 feeds.toml 后按需修改）
+# MaiGO RSS 订阅采集器示例配置（可复制为 feeds.toml 后按需修改）
 
 maigo_url = "http://127.0.0.1:8768"
 # 若服务端配置了 auth_token，请填同一令牌，或通过环境变量 MAIGO_AUTH_TOKEN 传入
 auth_token = ""
-branch_id = "daily_feeder"
-state_file = "data/daily_feeder_seen.json"
+branch_id = "rss_collector"
+state_file = "data/rss_collector_seen.json"
 interval_seconds = 1800
 max_items_per_feed = 3
 persona_name = "麦麦"
 
 [llm]
-# 可选：填入 OpenAI 兼容接口后自动生成第一人称观后感；留空则使用轻量化规则感想
+# 可选：填入 OpenAI 兼容接口后生成第一人称简短评价；留空则使用规则模板
 base_url = ""
 api_key = ""
 model = ""

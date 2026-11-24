@@ -20,6 +20,7 @@ env/
 .coverage
 .coverage.*
 htmlcov/
+uv.lock
 
 # 运行时数据、日志与本地配置（含密钥）
 /data/

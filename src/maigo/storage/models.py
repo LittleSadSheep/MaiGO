@@ -70,6 +70,8 @@ class DailyChronicleRow:
     source_event_ids: List[int]
     sealed_at_ms: Optional[int]
     updated_at_ms: int
+    mood_tag: str = ""
+    unfinished_thread: str = ""
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,7 @@ class PersonaAnchorRow:
     note: str
     created_at_ms: int
     updated_at_ms: int
+    superseded_by_id: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -215,3 +218,35 @@ class SaveStateRow:
     summary: str
     updated_at_ms: int
     metadata: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class LifeArcRow:
+    """温层近期主线（连续多日进行的跨端故事或项目线索）。"""
+
+    id: int
+    title: str
+    summary: str
+    public_summary: str
+    status: str
+    visibility: str
+    save_id: Optional[str]
+    mood_hint: str
+    source_event_ids: List[int]
+    last_event_at_ms: int
+    created_at_ms: int
+    updated_at_ms: int
+
+
+@dataclass(frozen=True)
+class EmbeddingRow:
+    """单条记忆的语义向量持久化记录（BLOB 存小端 float32 数组）。"""
+
+    id: int
+    item_type: str
+    item_id: int
+    model: str
+    dims: int
+    vector_blob: bytes
+    content_hash: str
+    updated_at_ms: int

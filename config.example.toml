@@ -1,0 +1,44 @@
+# MaiGO 服务配置示例（复制为 config.toml 后按需填写，config.toml 默认已被 Git 忽略）
+
+host = "127.0.0.1"
+port = 8768
+# 访问令牌（若接入公网/局域网请务必填写高强度随机串，也可通过 MAIGO_AUTH_TOKEN 注入）
+auth_token = ""
+db_path = "data/maigo.sqlite3"
+day_rollover_hour = 4
+timezone_offset_hours = 8
+log_level = "INFO"
+# 遗忘名单摘要盐值（正式运行前请改为随机字符串）
+identity_salt = "maigo-default-salt"
+dashboard_dist_dir = "dashboard/dist"
+
+[synthesizer]
+batch_event_threshold = 8
+min_interval_ms = 900000
+recent_window_ms = 1800000
+topic_ttl_ms = 259200000
+auto_background = true
+poll_interval_ms = 30000
+# 超过 30 天未兑现的约定自动降权为 stale，保留历史可检索而不挤占慢层提示词
+stale_promise_days = 30
+persona_name = "麦麦"
+wake_hint_enabled = true
+
+# 可选 OpenAI 兼容小模型（配置后日内编年会自动产出带情绪与因果衔接的第一人称手账；留空走规则兜底）
+base_url = ""
+api_key = ""
+model = ""
+timeout_ms = 15000
+
+[embedding]
+# 可选 OpenAI 兼容语义向量接口（留空则纯用 SQLite FTS5 trigram + unicode61 + LIKE 稀疏检索）
+base_url = ""
+api_key = ""
+model = ""
+timeout_ms = 10000
+auto_index = true
+
+[backup]
+dir = "data/backups"
+keep_days = 7
+auto_daily = true

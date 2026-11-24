@@ -5,13 +5,15 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION: int = 1
+SCHEMA_VERSION: int = 2
 
 EXPECTED_TABLES: tuple[str, ...] = (
     "schema_migrations",
     "experience_events",
     "experience_events_fts",
+    "experience_events_trigram",
     "daily_chronicles",
+    "life_arcs",
     "persona_anchors",
     "persona_anchors_fts",
     "topic_seeds",
@@ -24,6 +26,7 @@ EXPECTED_TABLES: tuple[str, ...] = (
     "checkout_sessions",
     "branch_presence",
     "save_states",
+    "memory_embeddings",
 )
 
 _SCHEMA_SQL = """
@@ -82,6 +85,33 @@ CREATE TRIGGER IF NOT EXISTS trg_events_au AFTER UPDATE ON experience_events BEG
     VALUES (new.id, new.summary, new.verbatim, new.reaction, new.context_scope);
 END;
 
+CREATE VIRTUAL TABLE IF NOT EXISTS experience_events_trigram USING fts5(
+    summary,
+    verbatim,
+    reaction,
+    context_scope,
+    content='experience_events',
+    content_rowid='id',
+    tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_events_tri_ai AFTER INSERT ON experience_events BEGIN
+    INSERT INTO experience_events_trigram(rowid, summary, verbatim, reaction, context_scope)
+    VALUES (new.id, new.summary, new.verbatim, new.reaction, new.context_scope);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_events_tri_ad AFTER DELETE ON experience_events BEGIN
+    INSERT INTO experience_events_trigram(experience_events_trigram, rowid, summary, verbatim, reaction, context_scope)
+    VALUES ('delete', old.id, old.summary, old.verbatim, old.reaction, old.context_scope);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_events_tri_au AFTER UPDATE ON experience_events BEGIN
+    INSERT INTO experience_events_trigram(experience_events_trigram, rowid, summary, verbatim, reaction, context_scope)
+    VALUES ('delete', old.id, old.summary, old.verbatim, old.reaction, old.context_scope);
+    INSERT INTO experience_events_trigram(rowid, summary, verbatim, reaction, context_scope)
+    VALUES (new.id, new.summary, new.verbatim, new.reaction, new.context_scope);
+END;
+
 CREATE TABLE IF NOT EXISTS daily_chronicles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     day_key TEXT NOT NULL,
@@ -90,11 +120,30 @@ CREATE TABLE IF NOT EXISTS daily_chronicles (
     body TEXT NOT NULL DEFAULT '',
     public_body TEXT NOT NULL DEFAULT '',
     group_body TEXT NOT NULL DEFAULT '',
+    mood_tag TEXT NOT NULL DEFAULT '',
+    unfinished_thread TEXT NOT NULL DEFAULT '',
     source_event_ids_json TEXT NOT NULL DEFAULT '[]',
     sealed_at_ms INTEGER,
     updated_at_ms INTEGER NOT NULL,
     UNIQUE (day_key, slot_key)
 );
+
+CREATE TABLE IF NOT EXISTS life_arcs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    public_summary TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'completed')),
+    visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public', 'group', 'private')),
+    save_id TEXT,
+    mood_hint TEXT NOT NULL DEFAULT '',
+    source_event_ids_json TEXT NOT NULL DEFAULT '[]',
+    last_event_at_ms INTEGER NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_life_arcs_active ON life_arcs (status, last_event_at_ms DESC);
 
 CREATE TABLE IF NOT EXISTS persons (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,7 +164,8 @@ CREATE TABLE IF NOT EXISTS persona_anchors (
     visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public', 'group', 'private')),
     save_id TEXT,
     target_person_id INTEGER REFERENCES persons(id) ON DELETE SET NULL,
-    status TEXT NOT NULL CHECK (status IN ('active', 'open', 'closed', 'void')),
+    status TEXT NOT NULL CHECK (status IN ('active', 'open', 'closed', 'void', 'superseded', 'stale')),
+    superseded_by_id INTEGER REFERENCES persona_anchors(id) ON DELETE SET NULL,
     note TEXT NOT NULL DEFAULT '',
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL
@@ -254,6 +304,20 @@ CREATE TABLE IF NOT EXISTS save_states (
     updated_at_ms INTEGER NOT NULL,
     metadata_json TEXT NOT NULL DEFAULT '{}'
 );
+
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_type TEXT NOT NULL CHECK (item_type IN ('event', 'anchor', 'arc')),
+    item_id INTEGER NOT NULL,
+    model TEXT NOT NULL,
+    dims INTEGER NOT NULL,
+    vector_blob BLOB NOT NULL,
+    content_hash TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    UNIQUE (item_type, item_id, model)
+);
+
+CREATE INDEX IF NOT EXISTS idx_embeddings_type_model ON memory_embeddings (item_type, model, updated_at_ms DESC);
 """
 
 

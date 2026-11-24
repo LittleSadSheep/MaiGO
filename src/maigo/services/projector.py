@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
 from maigo.runtime import ClockMs, now_ms
 from maigo.services.identity import ActorCardProjection, IdentityService, PersonDirectoryEntry
@@ -22,17 +22,21 @@ from maigo.services.sanitizer import (
     normalize_visibility,
     sanitize_for_model,
 )
-from maigo.services.synthesizer_rules import SLOT_LABELS, compute_day_and_slot
+from maigo.services.synthesizer_rules import SLOT_LABELS, compute_day_and_slot, slot_rank
 from maigo.storage.db import MaiGODatabase
-from maigo.storage.models import CheckoutSessionRow, DailyChronicleRow, PersonaAnchorRow
+from maigo.storage.models import CheckoutSessionRow, DailyChronicleRow, LifeArcRow, PersonaAnchorRow
 from maigo.storage.repos import (
     DailyChronicleRepo,
     ExperienceEventRepo,
+    LifeArcRepo,
     PersonaAnchorRepo,
     PersonRepo,
     SessionRepo,
     TopicSeedRepo,
 )
+
+if TYPE_CHECKING:
+    from maigo.services.retrieval import HybridRecallService
 
 _BRANCH_LABELS = {
     "maibot": "QQ群",
@@ -128,6 +132,8 @@ class ViewProjector:
         timezone_offset_hours: int = 8,
         recent_window_ms: int = 1_800_000,
         clock_ms: ClockMs = now_ms,
+        retrieval: Optional[HybridRecallService] = None,
+        wake_hint_enabled: bool = True,
     ) -> None:
         self._db = db
         self._identity = identity
@@ -135,12 +141,15 @@ class ViewProjector:
         self._tz_offset = timezone_offset_hours
         self._recent_window_ms = recent_window_ms
         self._clock_ms = clock_ms
+        self._retrieval = retrieval
+        self._wake_hint_enabled = wake_hint_enabled
         self._chronicle = DailyChronicleRepo(clock_ms=clock_ms)
         self._anchors = PersonaAnchorRepo(clock_ms=clock_ms)
         self._topics = TopicSeedRepo(clock_ms=clock_ms)
         self._events = ExperienceEventRepo(clock_ms=clock_ms)
         self._persons = PersonRepo(clock_ms=clock_ms)
         self._sessions = SessionRepo(clock_ms=clock_ms)
+        self._arcs = LifeArcRepo(clock_ms=clock_ms)
 
     async def build_context(
         self,
@@ -158,23 +167,34 @@ class ViewProjector:
         vis_level = normalize_visibility(target_visibility, default="public")
         vis_allowed = allowed_visibilities(vis_level)
         now = int(self._clock_ms())
-        current_day, _ = compute_day_and_slot(
+        current_day, current_slot = compute_day_and_slot(
             now, day_rollover_hour=self._rollover_hour, timezone_offset_hours=self._tz_offset
         )
 
         def _op(conn: sqlite3.Connection) -> ContextProjection:
             all_ext_ids = [item.external_id for item in self._persons.list_all_identities(conn)]
 
-            # 1. 慢层组装：仅读昨日余温 + 今日已封存时段 + 活跃立场/未兑现承诺
-            sealed_rows = self._chronicle.list_by_day(conn, day_key=current_day, status="sealed")
+            # 1. 慢层组装：温层近期主线 + 昨日余温 + 今日已封存时段 + 固定作息留白 + 生效中立场/承诺
+            all_today = self._chronicle.list_by_day(conn, day_key=current_day)
+            sealed_rows = [row for row in all_today if row.status == "sealed"]
+            arcs = self._arcs.list_arcs(conn, statuses=["active"], visibilities=vis_allowed, save_id=save_id, limit=3)
             stances = self._anchors.list_anchors(
                 conn, anchor_type="stance", statuses=["active"], visibilities=vis_allowed, save_id=save_id, limit=12
             )
             promises = self._anchors.list_anchors(
                 conn, anchor_type="promise", statuses=["open"], visibilities=vis_allowed, save_id=save_id, limit=12
             )
+            wake_hint = self._build_morning_wake_hint(
+                conn,
+                current_day=current_day,
+                current_slot=current_slot,
+                all_today=all_today,
+                target_visibility=vis_level,
+            )
             stable_text = self._render_stable_brief(
+                arcs=arcs,
                 sealed_rows=sealed_rows,
+                wake_hint=wake_hint,
                 stances=stances,
                 promises=promises,
                 target_visibility=vis_level,
@@ -271,10 +291,41 @@ class ViewProjector:
 
         return await self._db.run(_op)
 
+    def _build_morning_wake_hint(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        current_day: str,
+        current_slot: str,
+        all_today: Sequence[DailyChronicleRow],
+        target_visibility: str,
+    ) -> str:
+        """若今日已有其它生活记录但上午完全空白且已过中午，结合昨晚收工晚不晚补充固定上午留白。"""
+        if not self._wake_hint_enabled or slot_rank(current_slot) < slot_rank("afternoon"):
+            return ""
+        has_morning = any(
+            r.slot_key == "morning" and bool(_chronicle_body_for_visibility(r, target_visibility)) for r in all_today
+        )
+        if has_morning:
+            return ""
+        has_any_history = bool(all_today)
+        prev_days = [d for d in self._chronicle.list_recent_days(conn, limit_days=3) if d < current_day]
+        late_yesterday = False
+        if prev_days:
+            has_any_history = True
+            late_row = self._chronicle.get_slot(conn, day_key=prev_days[0], slot_key="late_night")
+            if late_row is not None and bool(_chronicle_body_for_visibility(late_row, target_visibility)):
+                late_yesterday = True
+        if not has_any_history:
+            return ""
+        return "昨晚忙到深夜收工，今天上午一直在补觉休息" if late_yesterday else "今天上午宅家摸鱼休息，没有在外头冒泡"
+
     def _render_stable_brief(
         self,
         *,
+        arcs: Sequence[LifeArcRow],
         sealed_rows: Sequence[DailyChronicleRow],
+        wake_hint: str,
         stances: Sequence[PersonaAnchorRow],
         promises: Sequence[PersonaAnchorRow],
         target_visibility: str,
@@ -283,13 +334,31 @@ class ViewProjector:
         """渲染严格不含相对时间词的慢层简报。"""
         sections: List[str] = []
 
+        if arcs:
+            arc_lines: List[str] = []
+            for arc in arcs:
+                raw_sum = (arc.public_summary or arc.summary) if target_visibility == "public" else arc.summary
+                clean_title = sanitize_for_model(arc.title, known_external_ids)
+                clean_sum = sanitize_for_model(raw_sum, known_external_ids)
+                mood = f"（状态：{arc.mood_hint}）" if arc.mood_hint else ""
+                arc_lines.append(f"- {clean_title}{mood}：{clean_sum}")
+            sections.append("【近期一直在忙的主线】\n" + "\n".join(arc_lines))
+
         chronicle_lines: List[str] = []
+        if wake_hint:
+            chronicle_lines.append(f"- 今天上午：{wake_hint}")
         for row in sealed_rows:
             body = _chronicle_body_for_visibility(row, target_visibility)
             if not body:
                 continue
             label = SLOT_LABELS.get(row.slot_key, row.slot_key)
-            chronicle_lines.append(f"- {label}：{sanitize_for_model(body, known_external_ids)}")
+            mood_part = f"（状态：{row.mood_tag}）" if row.mood_tag and row.slot_key != "yesterday_carry" else ""
+            thread_part = (
+                f"；待续：{sanitize_for_model(row.unfinished_thread, known_external_ids)}"
+                if row.unfinished_thread and row.slot_key != "yesterday_carry"
+                else ""
+            )
+            chronicle_lines.append(f"- {label}{mood_part}：{sanitize_for_model(body, known_external_ids)}{thread_part}")
         if chronicle_lines:
             sections.append("【麦麦今天的经历】\n" + "\n".join(chronicle_lines))
 
@@ -357,7 +426,14 @@ class ViewProjector:
         limit: int = 5,
         target_visibility: str = "public",
     ) -> str:
-        """混合检索跨端经历与锚点，供 MCP ``maigo_recall_life`` 与看板检索使用。"""
+        """混合检索跨端经历、温层主线与锚点，优先委派双路 HybridRecallService，否则走纯 SQLite 检索。"""
+        if self._retrieval is not None:
+            return await self._retrieval.recall(
+                query=query,
+                days=days,
+                limit=limit,
+                target_visibility=target_visibility,
+            )
         vis_level = normalize_visibility(target_visibility, default="public")
         vis_allowed = allowed_visibilities(vis_level)
         since_ms = int(self._clock_ms()) - max(1, int(days)) * 24 * 3600 * 1000

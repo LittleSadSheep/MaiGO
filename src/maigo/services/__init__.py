@@ -32,6 +32,7 @@ from maigo.services.synthesizer import (
 from maigo.services.synthesizer_rules import (
     SLOT_LABELS,
     AnchorCandidate,
+    ArcCandidate,
     SlotSynthesisDraft,
     SynthesisLLMClient,
     TopicCandidate,
@@ -42,6 +43,7 @@ __all__ = [
     "ActorCardProjection",
     "AnchorCandidate",
     "AnchorProjection",
+    "ArcCandidate",
     "BackgroundSynthesizer",
     "ChronicleSynthesizer",
     "ContextProjection",

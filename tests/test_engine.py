@@ -368,3 +368,158 @@ async def test_same_slot_resynthesis_does_not_resurrect_closed_promise(tmp_path)
     all_after = await db.run(lambda c: synth._anchors.list_anchors(c))
     assert len(all_after) == 1 and all_after[0].status == "closed"
     await db.close()
+
+
+async def test_v2_life_arcs_mood_wake_hint_stance_evolution_and_stale_promises(tmp_path) -> None:
+    """验证 v0.2 活人感编年：温层主线、情绪底色、昨晚熬夜上午留白、立场演进及陈年承诺自动 stale。"""
+    from maigo.services import ArcCandidate
+
+    class _EvolutionLLM:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        async def summarize_slot_with_context(
+            self,
+            *,
+            day_key: str,
+            slot_key: str,
+            events: Sequence[ExperienceEventRow],
+            existing_stances=(),
+            existing_arcs=(),
+            persona_name: str = "麦麦",
+        ) -> SlotSynthesisDraft:
+            del day_key, slot_key, existing_arcs, persona_name
+            self.call_count += 1
+            if existing_stances:
+                # 第二轮时看到老立场并演进替代它
+                old_id = existing_stances[0].id
+                return SlotSynthesisDraft(
+                    body="现在居然学会用自动咖啡机做冰美式啦",
+                    public_body="现在居然学会用自动咖啡机做冰美式啦",
+                    group_body="现在居然学会用自动咖啡机做冰美式啦",
+                    mood_tag="惬意",
+                    unfinished_thread="下次试试冷萃配方",
+                    anchors=[
+                        AnchorCandidate(
+                            anchor_type="stance",
+                            content="最近其实挺喜欢冰美式",
+                            source_event_id=events[-1].id,
+                            status="active",
+                            supersedes_id=old_id,
+                        )
+                    ],
+                    arcs=[
+                        ArcCandidate(
+                            title="咖啡手冲研究",
+                            summary="从嫌苦到真香的冰美式实验周",
+                            public_summary="从嫌苦到真香的冰美式实验周",
+                            mood_hint="兴致很高",
+                            source_event_id=events[-1].id,
+                        )
+                    ],
+                )
+            return SlotSynthesisDraft(
+                body="昨晚深夜还在和大家折腾红石电路",
+                public_body="昨晚深夜还在和大家折腾红石电路",
+                group_body="昨晚深夜还在和大家折腾红石电路",
+                mood_tag="略累但开心",
+                anchors=[
+                    AnchorCandidate(
+                        anchor_type="stance",
+                        content="以前嫌冰美式太苦喝不惯",
+                        source_event_id=events[0].id,
+                        status="active",
+                    )
+                ],
+            )
+
+    # 设定在昨日深夜 23:30 注入一条立场事件 + 一条 40 天前的旧承诺
+    clock = MutableClock(_ms(2026, 11, 23, 23, 30))
+    db = MaiGODatabase(tmp_path / "v2_engine.sqlite3", clock_ms=clock)
+    await db.initialize()
+    identity = IdentityService(db, clock_ms=clock)
+    event_repo = ExperienceEventRepo(clock_ms=clock)
+    llm = _EvolutionLLM()
+    synth = ChronicleSynthesizer(
+        db,
+        identity=identity,
+        config=SynthesizerConfig(auto_background=False, stale_promise_days=30),
+        clock_ms=clock,
+        llm_client=llm,
+    )
+    projector = ViewProjector(db, identity=identity, clock_ms=clock, wake_hint_enabled=True)
+
+    # 手工先插一条 40 天前未兑现承诺，验证合成时自动降权转 stale
+    await db.run(
+        lambda c: (
+            c.execute(
+                """
+            INSERT INTO persona_anchors (
+                anchor_type, content, verbatim, branch_id, visibility, status, created_at_ms, updated_at_ms
+            ) VALUES ('promise', '四十天前的老约', '下次一定', 'maibot', 'public', 'open', ?, ?)
+            """,
+                (clock() - 40 * 86_400_000, clock() - 40 * 86_400_000),
+            )
+            and c.commit()
+        )
+    )
+
+    await db.run(
+        lambda c: event_repo.ingest_batch(
+            c,
+            [
+                NewExperienceEvent(
+                    idempotency_key="late-1",
+                    branch_id="amaidesu",
+                    occurred_at_ms=clock(),
+                    kind="speech",
+                    actor_role="self",
+                    visibility="public",
+                    summary="深夜折腾红石",
+                    verbatim="冰美式太苦了我才不喝",
+                )
+            ],
+        )
+    )
+    rep1 = await synth.synthesize_pending(force_seal=True)
+    assert rep1.created_anchors == 1 and rep1.staled_promises == 1
+
+    # 推进至次日 15:00（下午），且上午空白；再上报新想法触发立场替代 + 温层主线
+    clock.set(_ms(2026, 11, 24, 15, 0))
+    await db.run(
+        lambda c: event_repo.ingest_batch(
+            c,
+            [
+                NewExperienceEvent(
+                    idempotency_key="aft-2",
+                    branch_id="maibot",
+                    occurred_at_ms=clock(),
+                    kind="speech",
+                    actor_role="self",
+                    visibility="public",
+                    summary="发现加燕麦奶好喝",
+                    verbatim="加点燕麦奶其实很顺口嘛",
+                )
+            ],
+        )
+    )
+    rep2 = await synth.synthesize_pending(force_seal=True)
+    assert rep2.upserted_arcs == 1 and rep2.updated_anchors >= 1
+
+    ctx_afternoon = await projector.build_context(branch_id="amaidesu", target_visibility="public")
+    brief = ctx_afternoon.stable_brief or ""
+    # 温层主线、昨晚熬夜上午补觉留白、情绪底色、待续悬念、更新后的新立场全在慢层
+    assert "【近期一直在忙的主线】" in brief and "咖啡手冲研究" in brief
+    assert "昨晚忙到深夜收工，今天上午一直在补觉休息" in brief
+    assert "状态：惬意" in brief and "待续：下次试试冷萃配方" in brief
+    assert "最近其实挺喜欢冰美式" in brief
+    assert "以前嫌冰美式太苦" not in brief
+    assert "四十天前的老约" not in brief
+
+    # 同日下午再往前拨半小时（未跨时段且无新封存），慢层逐字节稳定且 ETag 命中
+    clock.set(_ms(2026, 11, 24, 15, 45))
+    ctx_same_slot = await projector.build_context(
+        branch_id="amaidesu", target_visibility="public", if_brief_etag=ctx_afternoon.brief_etag
+    )
+    assert ctx_same_slot.stable_unchanged is True and ctx_same_slot.brief_etag == ctx_afternoon.brief_etag
+    await db.close()

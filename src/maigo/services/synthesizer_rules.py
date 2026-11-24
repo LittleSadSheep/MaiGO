@@ -12,7 +12,7 @@ import httpx
 
 from maigo.runtime import get_logger
 from maigo.services.sanitizer import describe_visibility_scope, sanitize_for_model
-from maigo.storage.models import DailyChronicleRow, ExperienceEventRow
+from maigo.storage.models import DailyChronicleRow, ExperienceEventRow, LifeArcRow, PersonaAnchorRow
 
 logger = get_logger("services.synthesizer.rules")
 
@@ -27,6 +27,12 @@ SLOT_LABELS: Dict[str, str] = {
 
 _PROMISE_KEYWORDS = ("答应", "约定", "今晚直播", "明天直播", "下次直播", "一定带", "建新", "补发", "发动态")
 _STANCE_KEYWORDS = ("喜欢", "讨厌", "最爱", "不吃", "超爱", "觉得", "看好", "坚持")
+_MOOD_RULES: Tuple[Tuple[Tuple[str, ...], str], ...] = (
+    (("累", "困", "折腾", "翻车", "加班"), "略累但有劲"),
+    (("得意", "点亮", "竣工", "建成", "通关", "搞定"), "很有成就感"),
+    (("好笑", "哈哈", "呆呆", "有趣", "可爱", "搞笑"), "轻松惬意"),
+    (("热闹", "讨论", "聊到", "约定", "直播"), "兴致不错"),
+)
 
 
 @dataclass(frozen=True)
@@ -40,6 +46,7 @@ class AnchorCandidate:
     note: str = ""
     save_id: Optional[str] = None
     target_person_id: Optional[int] = None
+    supersedes_id: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -54,14 +61,31 @@ class TopicCandidate:
 
 
 @dataclass(frozen=True)
+class ArcCandidate:
+    """合成产物中的候选温层近期主线（连续几天在做的事）。"""
+
+    title: str
+    summary: str
+    public_summary: str = ""
+    status: str = "active"
+    visibility: str = "public"
+    save_id: Optional[str] = None
+    mood_hint: str = ""
+    source_event_id: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class SlotSynthesisDraft:
     """单时段合成草稿（供 LLM 客户端或内置规则引擎共同输出）。"""
 
     body: str
     public_body: str
     group_body: str
+    mood_tag: str = ""
+    unfinished_thread: str = ""
     anchors: List[AnchorCandidate] = field(default_factory=list)
     topics: List[TopicCandidate] = field(default_factory=list)
+    arcs: List[ArcCandidate] = field(default_factory=list)
 
 
 class SynthesisLLMClient(Protocol):
@@ -92,26 +116,48 @@ class OpenAISynthesisClient:
         slot_key: str,
         events: Sequence[ExperienceEventRow],
     ) -> Optional[SlotSynthesisDraft]:
-        """调用外部模型将同一时段多渠道事件整理成第一人称纪要与候选锚点；失败返回 None 走规则兜底。"""
+        """兼容简单 Protocol 的单时段整理入口。"""
+        return await self.summarize_slot_with_context(day_key=day_key, slot_key=slot_key, events=events)
+
+    async def summarize_slot_with_context(
+        self,
+        *,
+        day_key: str,
+        slot_key: str,
+        events: Sequence[ExperienceEventRow],
+        existing_stances: Sequence[PersonaAnchorRow] = (),
+        existing_arcs: Sequence[LifeArcRow] = (),
+        persona_name: str = "麦麦",
+    ) -> Optional[SlotSynthesisDraft]:
+        """调用外部模型将多渠道碎片整理成带情绪与因果线索的第一人称手账，失败回落规则兜底。"""
         if not self._base_url or not self._model:
             return None
         lines = [
             (
                 f"[id={ev.id}][branch={ev.branch_id}][role={ev.actor_role}][vis={ev.visibility}]"
-                f"[kind={ev.kind}] {ev.summary} | verbatim={ev.verbatim} | reaction={ev.reaction}"
+                f"[kind={ev.kind}][save={ev.save_id or '-'}] {ev.summary}"
+                f" | verbatim={ev.verbatim} | reaction={ev.reaction}"
             )
             for ev in events
         ]
+        stance_hint = "\n".join(f"- #{s.id}: {s.content}" for s in existing_stances[:10]) or "（暂无）"
+        arc_hint = "\n".join(f"- [{a.status}] {a.title}: {a.summary}" for a in existing_arcs[:6]) or "（暂无）"
         prompt = (
-            "你是虚拟主播麦麦的记忆编年整理器。请把下面同一时段的多端经历整理为 JSON：\n"
+            f"你是虚拟主播「{persona_name}」的 24 小时跨端生活手账整理器。\n"
+            f"请把下面同一时段的多端碎片梳理成连贯、有因果和口语生活感的 JSON（严禁写相对时间词）：\n"
             f"作息日={day_key} 时段={SLOT_LABELS.get(slot_key, slot_key)}\n"
+            f"当前已有立场（如有明确改变可填 supersedes_id）：\n{stance_hint}\n"
+            f"近期进行中主线：\n{arc_hint}\n"
             "输出字段：\n"
-            '{"body": "含私聊在内的第一人称时段总结", '
-            '"public_body": "严格去掉所有private事件与群隐私的公开总结", '
-            '"group_body": "去掉private事件的群聊可见总结", '
-            '"anchors": [{"anchor_type": "stance|promise", "content": "...", "source_event_id": 1, "status": "active|open|closed|void"}], '
-            '"topics": [{"title": "...", "summary": "...", "reaction": "...", "source_event_id": 1}]}\n'
-            "硬约束：anchors 只能从 actor_role=self 的事件中提取，严禁把 peer 的话当成麦麦自己的立场或承诺。\n"
+            '{"body": "第一人称主线+插曲时段日记（含私聊）", '
+            '"public_body": "去掉所有private并把群聊趣事自然改写为公开口吻的日记", '
+            '"group_body": "去掉private事件的群聊可见日记", '
+            '"mood_tag": "2~6字当前情绪底色", '
+            '"unfinished_thread": "15~30字待续悬念或还没聊透的事（无则空串）", '
+            '"anchors": [{"anchor_type": "stance|promise", "content": "...", "source_event_id": 1, "status": "active|open|closed|void", "supersedes_id": null}], '
+            '"topics": [{"title": "...", "summary": "...", "reaction": "...", "source_event_id": 1}], '
+            '"arcs": [{"title": "...", "summary": "...", "public_summary": "...", "save_id": null, "mood_hint": "...", "source_event_id": 1}]}\n'
+            "硬约束：anchors 只能从 actor_role=self 的事件提取，严禁把 peer 的话当成自己的立场或承诺。\n"
             "事件列表：\n" + "\n".join(lines)
         )
         headers = {"Content-Type": "application/json"}
@@ -120,7 +166,7 @@ class OpenAISynthesisClient:
         payload = {
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.2,
+            "temperature": 0.25,
             "response_format": {"type": "json_object"},
         }
         try:
@@ -136,6 +182,7 @@ class OpenAISynthesisClient:
                     source_event_id=int(a["source_event_id"]),
                     status=str(a.get("status", "active")),
                     note=str(a.get("note", "")),
+                    supersedes_id=int(a["supersedes_id"]) if a.get("supersedes_id") is not None else None,
                 )
                 for a in (data.get("anchors") or [])
                 if isinstance(a, dict) and a.get("source_event_id") is not None
@@ -150,12 +197,27 @@ class OpenAISynthesisClient:
                 for t in (data.get("topics") or [])
                 if isinstance(t, dict) and t.get("source_event_id") is not None
             ]
+            arcs = [
+                ArcCandidate(
+                    title=str(ar.get("title", "")).strip(),
+                    summary=str(ar.get("summary", "")).strip(),
+                    public_summary=str(ar.get("public_summary", "")).strip(),
+                    save_id=str(ar["save_id"]) if ar.get("save_id") else None,
+                    mood_hint=str(ar.get("mood_hint", "")).strip(),
+                    source_event_id=int(ar["source_event_id"]) if ar.get("source_event_id") is not None else None,
+                )
+                for ar in (data.get("arcs") or [])
+                if isinstance(ar, dict) and str(ar.get("title", "")).strip()
+            ]
             return SlotSynthesisDraft(
                 body=str(data.get("body", "")).strip(),
                 public_body=str(data.get("public_body", "")).strip(),
                 group_body=str(data.get("group_body", "")).strip(),
+                mood_tag=str(data.get("mood_tag", "")).strip(),
+                unfinished_thread=str(data.get("unfinished_thread", "")).strip(),
                 anchors=anchors,
                 topics=topics,
+                arcs=arcs,
             )
         except Exception as exc:
             logger.warning(f"调用外部编年整理模型失败，自动回落规则合成: {exc}")
@@ -194,17 +256,53 @@ def slot_rank(slot_key: str) -> int:
         return 99
 
 
+def _infer_rule_mood(events: Sequence[ExperienceEventRow]) -> str:
+    combined = " ".join(f"{e.summary} {e.reaction} {e.verbatim}" for e in events if e.visibility != "private")
+    for kws, mood in _MOOD_RULES:
+        if any(k in combined for k in kws):
+            return mood
+    return ""
+
+
+def _extract_rule_arcs(
+    ev: ExperienceEventRow,
+    out: List[ArcCandidate],
+    known_external_ids: Sequence[str],
+) -> None:
+    """仅当事件带显式 arc_title 或含 save_id 的重要里程碑时，提炼跨日温层主线。"""
+    if ev.visibility == "private":
+        return
+    explicit_title = str(ev.metadata.get("arc_title") or "").strip()
+    is_highlight_save = bool(ev.save_id and ev.kind == "milestone" and ev.metadata.get("highlight"))
+    if not explicit_title and not is_highlight_save:
+        return
+    title = sanitize_for_model(explicit_title or f"存档 {ev.save_id} 近况", known_external_ids)[:60]
+    clean_sum = sanitize_for_model(ev.summary, known_external_ids)[:200]
+    out.append(
+        ArcCandidate(
+            title=title,
+            summary=clean_sum,
+            public_summary=clean_sum,
+            visibility=ev.visibility,
+            save_id=ev.save_id,
+            source_event_id=ev.id,
+        )
+    )
+
+
 def build_rule_draft(
     events: Sequence[ExperienceEventRow],
     *,
     known_external_ids: Sequence[str],
 ) -> SlotSynthesisDraft:
-    """确定性规则合成器：在无外部 LLM 或接口故障时稳定产出三档可见性纪要与候选。"""
+    """确定性规则合成器：在无外部 LLM 或接口故障时稳定产出三档可见性纪要、情绪与候选。"""
     body_lines: List[str] = []
     public_lines: List[str] = []
     group_lines: List[str] = []
     anchors: List[AnchorCandidate] = []
     topics: List[TopicCandidate] = []
+    arcs: List[ArcCandidate] = []
+    unfinished_thread = ""
 
     for ev in events:
         where = describe_visibility_scope(ev.visibility, branch_id=ev.branch_id)
@@ -224,17 +322,23 @@ def build_rule_draft(
                 group_lines.append(line)
             if line not in public_lines:
                 public_lines.append(line)
+            if ev.reaction.strip():
+                unfinished_thread = sanitize_for_model(ev.reaction.strip()[:48], known_external_ids)
 
         if ev.actor_role == "self" and ev.kind in ("speech", "promise_update", "browsed"):
             _extract_rule_anchors(ev, anchors)
         _extract_rule_topics(ev, topics, known_external_ids)
+        _extract_rule_arcs(ev, arcs, known_external_ids)
 
     return SlotSynthesisDraft(
         body="；".join(body_lines) + ("。" if body_lines else ""),
         public_body="；".join(public_lines) + ("。" if public_lines else ""),
         group_body="；".join(group_lines) + ("。" if group_lines else ""),
+        mood_tag=_infer_rule_mood(events),
+        unfinished_thread=unfinished_thread,
         anchors=anchors,
         topics=topics,
+        arcs=arcs,
     )
 
 

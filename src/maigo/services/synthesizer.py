@@ -6,7 +6,7 @@ import asyncio
 import re
 import sqlite3
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from maigo.config import SynthesizerConfig
 from maigo.runtime import ClockMs, get_logger, now_ms
@@ -27,9 +27,14 @@ from maigo.storage.models import DailyChronicleRow, ExperienceEventRow, TopicSee
 from maigo.storage.repos import (
     DailyChronicleRepo,
     ExperienceEventRepo,
+    LifeArcRepo,
     PersonaAnchorRepo,
     TopicSeedRepo,
 )
+
+if TYPE_CHECKING:
+    from maigo.services.maintenance import MaintenanceService
+    from maigo.services.retrieval import HybridRecallService
 
 logger = get_logger("services.synthesizer")
 
@@ -46,10 +51,12 @@ class SynthesisReport:
     blocked_poison_anchors: int = 0
     created_topics: int = 0
     marked_topic_consumptions: int = 0
+    upserted_arcs: int = 0
+    staled_promises: int = 0
 
 
 class ChronicleSynthesizer:
-    """编年合成主服务：串联未整理事件拉取、时段封存、代码防投毒入账与跨日归档。"""
+    """编年合成主服务：串联未整理事件拉取、时段封存、代码防投毒入账、温层主线与跨日归档。"""
 
     def __init__(
         self,
@@ -61,6 +68,10 @@ class ChronicleSynthesizer:
         timezone_offset_hours: int = 8,
         clock_ms: ClockMs = now_ms,
         llm_client: Optional[SynthesisLLMClient] = None,
+        retrieval: Optional[HybridRecallService] = None,
+        maintenance: Optional[MaintenanceService] = None,
+        auto_daily_backup: bool = False,
+        auto_index_embeddings: bool = True,
     ) -> None:
         self._db = db
         self._identity = identity
@@ -72,6 +83,11 @@ class ChronicleSynthesizer:
         self._chronicle = DailyChronicleRepo(clock_ms=clock_ms)
         self._anchors = PersonaAnchorRepo(clock_ms=clock_ms)
         self._topics = TopicSeedRepo(clock_ms=clock_ms)
+        self._arcs = LifeArcRepo(clock_ms=clock_ms)
+        self._retrieval = retrieval
+        self._maintenance = maintenance
+        self._auto_daily_backup = auto_daily_backup
+        self._auto_index_embeddings = auto_index_embeddings
 
         if llm_client is not None:
             self._llm: Optional[SynthesisLLMClient] = llm_client
@@ -85,22 +101,30 @@ class ChronicleSynthesizer:
         else:
             self._llm = None
 
+    @property
+    def mode(self) -> str:
+        """返回当前编年整理方式（llm / rule）。"""
+        return "llm" if self._llm is not None else "rule"
+
     async def synthesize_pending(self, *, force_seal: bool = False) -> SynthesisReport:
-        """执行一轮编年合成，处理全部未整理事件并按作息规则封存已过时段。"""
+        """执行一轮编年合成，处理全部未整理事件、按作息封存时段、沉淀温层主线与自动维护。"""
         now = int(self._clock_ms())
         current_day, current_slot = compute_day_and_slot(
             now, day_rollover_hour=self._rollover_hour, timezone_offset_hours=self._tz_offset
         )
 
-        # 第一步：跨日封存旧日开放时段，并补全当日昨日余温
+        # 第一步：跨日封存旧日开放时段、补全昨日余温，并按配置降权超期未兑现承诺
         await self._db.run(lambda c: self._handle_day_rollover_sync(c, current_day=current_day))
+        stale_before = now - max(1, int(self._config.stale_promise_days)) * 24 * 3600 * 1000
 
         unsynthesized = await self._db.run(lambda c: self._events.list_unsynthesized(c, limit=400))
         if not unsynthesized:
-            if force_seal:
-                sealed_count = await self._db.run(lambda c: self._seal_day_slots_sync(c, day_key=current_day))
-                return SynthesisReport(sealed_slots=sealed_count)
-            return SynthesisReport()
+            sealed_count = (
+                await self._db.run(lambda c: self._seal_day_slots_sync(c, day_key=current_day)) if force_seal else 0
+            )
+            staled = await self._db.run(lambda c: self._anchors.mark_stale_promises(c, before_ms=stale_before))
+            await self._maybe_run_daily_backup(current_day)
+            return SynthesisReport(sealed_slots=sealed_count, staled_promises=staled)
 
         known_external_ids = await self._db.run(
             lambda c: [item.external_id for item in self._identity._persons.list_all_identities(c)]
@@ -122,7 +146,9 @@ class ChronicleSynthesizer:
         blocked_poison = 0
         created_topics = 0
         marked_consumptions = 0
+        upserted_arcs = 0
         processed_ids: List[int] = []
+        index_queue: List[Tuple[str, int, str]] = []
 
         for (day_key, slot_key), batch in sorted(groups.items(), key=lambda kv: (kv[0][0], slot_rank(kv[0][1]))):
             is_past_slot = day_key < current_day or (
@@ -134,9 +160,7 @@ class ChronicleSynthesizer:
             slot_events = await self._load_combined_slot_events(existing_slot, batch)
             valid_events = await self._filter_forgotten_events(slot_events)
 
-            draft = None
-            if self._llm is not None and valid_events:
-                draft = await self._llm.summarize_slot(day_key=day_key, slot_key=slot_key, events=valid_events)
+            draft = await self._draft_slot(day_key=day_key, slot_key=slot_key, valid_events=valid_events)
             if draft is None:
                 draft = build_rule_draft(valid_events, known_external_ids=known_external_ids)
 
@@ -154,7 +178,7 @@ class ChronicleSynthesizer:
                     sealed_slots += 1
 
             ev_map = {ev.id: ev for ev in batch}
-            c_anc, u_anc, blk, c_top, m_cons = await self._commit_candidates(
+            c_anc, u_anc, blk, c_top, m_cons, u_arc, new_idx = await self._commit_candidates(
                 batch=batch,
                 ev_map=ev_map,
                 draft=draft,
@@ -165,7 +189,16 @@ class ChronicleSynthesizer:
             blocked_poison += blk
             created_topics += c_top
             marked_consumptions += m_cons
+            upserted_arcs += u_arc
+            index_queue.extend(new_idx)
             processed_ids.extend(ev.id for ev in batch)
+
+            for ev in batch:
+                if ev.kind == "forget_request":
+                    continue
+                ev_text = f"{ev.summary} {ev.verbatim} {ev.reaction}".strip()
+                if ev_text:
+                    index_queue.append(("event", ev.id, sanitize_for_model(ev_text, known_external_ids)))
 
         sealed_slots += await self._db.run(
             lambda c: self._seal_earlier_slots_sync(
@@ -173,7 +206,16 @@ class ChronicleSynthesizer:
             )
         )
         await self._db.run(lambda c: self._handle_day_rollover_sync(c, current_day=current_day))
+        staled_promises = await self._db.run(lambda c: self._anchors.mark_stale_promises(c, before_ms=stale_before))
         await self._db.run(lambda c: self._events.mark_synthesized(c, processed_ids, synthesized_at_ms=now))
+
+        if self._retrieval is not None and self._auto_index_embeddings and index_queue:
+            try:
+                await self._retrieval.index_items(index_queue)
+            except Exception as exc:
+                logger.warning(f"编年后自动补齐语义向量失败（不影响主库落盘）: {exc}")
+
+        await self._maybe_run_daily_backup(current_day)
 
         return SynthesisReport(
             processed_events=len(processed_ids),
@@ -184,7 +226,45 @@ class ChronicleSynthesizer:
             blocked_poison_anchors=blocked_poison,
             created_topics=created_topics,
             marked_topic_consumptions=marked_consumptions,
+            upserted_arcs=upserted_arcs,
+            staled_promises=staled_promises,
         )
+
+    async def _draft_slot(
+        self,
+        *,
+        day_key: str,
+        slot_key: str,
+        valid_events: Sequence[ExperienceEventRow],
+    ) -> Optional[SlotSynthesisDraft]:
+        if self._llm is None or not valid_events:
+            return None
+        with_ctx = getattr(self._llm, "summarize_slot_with_context", None)
+        if callable(with_ctx):
+            stances, arcs = await self._db.run(
+                lambda c: (
+                    self._anchors.list_anchors(c, anchor_type="stance", statuses=["active"], limit=10),
+                    self._arcs.list_arcs(c, statuses=["active"], limit=6),
+                )
+            )
+            return await with_ctx(
+                day_key=day_key,
+                slot_key=slot_key,
+                events=valid_events,
+                existing_stances=stances,
+                existing_arcs=arcs,
+                persona_name=self._config.persona_name,
+            )
+        return await self._llm.summarize_slot(day_key=day_key, slot_key=slot_key, events=valid_events)
+
+    async def _maybe_run_daily_backup(self, current_day: str) -> None:
+        if self._maintenance is None or not self._auto_daily_backup:
+            return
+        try:
+            if not self._maintenance.has_backup_for_day(current_day):
+                await self._maintenance.create_backup()
+        except Exception as exc:
+            logger.warning(f"每日自动热备份失败（跳过本次）: {exc}")
 
     async def _load_slot(self, *, day_key: str, slot_key: str) -> Optional[DailyChronicleRow]:
         def _op(conn: sqlite3.Connection) -> Optional[DailyChronicleRow]:
@@ -212,6 +292,8 @@ class ChronicleSynthesizer:
                 public_body=sanitize_for_model(draft.public_body, known_external_ids),
                 group_body=sanitize_for_model(draft.group_body, known_external_ids),
                 source_event_ids=source_event_ids,
+                mood_tag=sanitize_for_model(draft.mood_tag, known_external_ids)[:24],
+                unfinished_thread=sanitize_for_model(draft.unfinished_thread, known_external_ids)[:100],
             )
 
         await self._db.run(_op)
@@ -223,8 +305,8 @@ class ChronicleSynthesizer:
         ev_map: Dict[int, ExperienceEventRow],
         draft: SlotSynthesisDraft,
         known_external_ids: Sequence[str],
-    ) -> Tuple[int, int, int, int, int]:
-        def _op(conn: sqlite3.Connection) -> Tuple[int, int, int, int, int]:
+    ) -> Tuple[int, int, int, int, int, int, List[Tuple[str, int, str]]]:
+        def _op(conn: sqlite3.Connection) -> Tuple[int, int, int, int, int, int, List[Tuple[str, int, str]]]:
             return self._commit_candidates_sync(
                 conn,
                 batch=batch,
@@ -260,20 +342,11 @@ class ChronicleSynthesizer:
         """过滤关联了已遗忘外部身份的事件，确保不再进入合成纪要。"""
 
         def _check(conn: sqlite3.Connection) -> List[ExperienceEventRow]:
-            kept: List[ExperienceEventRow] = []
-            for ev in events:
-                if ev.kind == "forget_request":
-                    continue
-                forgotten = any(
-                    self._identity._persons.is_forgotten_hash(
-                        conn, self._identity.hash_identity(actor.platform, actor.external_id)
-                    )
-                    for actor in ev.actors
-                    if actor.platform and actor.external_id
-                )
-                if not forgotten:
-                    kept.append(ev)
-            return kept
+            return [
+                ev
+                for ev in events
+                if ev.kind != "forget_request" and not self._identity.has_forgotten_actor_sync(conn, ev.actors)
+            ]
 
         return await self._db.run(_check)
 
@@ -285,14 +358,16 @@ class ChronicleSynthesizer:
         ev_map: Dict[int, ExperienceEventRow],
         draft: SlotSynthesisDraft,
         known_external_ids: Sequence[str],
-    ) -> Tuple[int, int, int, int, int]:
-        """校验并入账候选锚点、话头与跨端消费轨迹。"""
-        created_anchors, updated_anchors, blocked_poison = self._persist_anchors_sync(
+    ) -> Tuple[int, int, int, int, int, int, List[Tuple[str, int, str]]]:
+        """校验并入账候选锚点、话头、温层主线与跨端消费轨迹。"""
+        index_items: List[Tuple[str, int, str]] = []
+        created_anchors, updated_anchors, blocked_poison, anchor_idx = self._persist_anchors_sync(
             conn,
             ev_map=ev_map,
             candidates=draft.anchors,
             known_external_ids=known_external_ids,
         )
+        index_items.extend(anchor_idx)
 
         created_topics = 0
         expires_at = int(self._clock_ms()) + self._config.topic_ttl_ms
@@ -318,8 +393,45 @@ class ChronicleSynthesizer:
             if before_exists is None:
                 created_topics += 1
 
+        upserted_arcs = 0
+        for acand in draft.arcs:
+            if not acand.title.strip() or acand.visibility == "private":
+                continue
+            src_arc = (
+                (ev_map.get(acand.source_event_id) or self._events.get_by_id(conn, acand.source_event_id))
+                if acand.source_event_id is not None
+                else None
+            )
+            if src_arc is not None and src_arc.visibility == "private":
+                continue
+            clean_title = sanitize_for_model(acand.title, known_external_ids)[:64]
+            clean_sum = sanitize_for_model(acand.summary, known_external_ids)[:240]
+            clean_pub = sanitize_for_model(acand.public_summary or acand.summary, known_external_ids)[:240]
+            saved_arc = self._arcs.upsert_or_create(
+                conn,
+                title=clean_title,
+                summary=clean_sum,
+                public_summary=clean_pub,
+                status=acand.status if acand.status in ("active", "paused", "completed") else "active",
+                visibility=acand.visibility if acand.visibility in ("public", "group", "private") else "public",
+                save_id=acand.save_id or (src_arc.save_id if src_arc is not None else None),
+                mood_hint=sanitize_for_model(acand.mood_hint, known_external_ids)[:40],
+                source_event_ids=[src_arc.id] if src_arc is not None else (),
+                last_event_at_ms=src_arc.occurred_at_ms if src_arc is not None else None,
+            )
+            upserted_arcs += 1
+            index_items.append(("arc", saved_arc.id, f"{saved_arc.title}：{saved_arc.summary}"))
+
         marked_consumptions = self._detect_topic_consumptions_sync(conn, batch=batch)
-        return created_anchors, updated_anchors, blocked_poison, created_topics, marked_consumptions
+        return (
+            created_anchors,
+            updated_anchors,
+            blocked_poison,
+            created_topics,
+            marked_consumptions,
+            upserted_arcs,
+            index_items,
+        )
 
     def _persist_anchors_sync(
         self,
@@ -328,12 +440,13 @@ class ChronicleSynthesizer:
         ev_map: Dict[int, ExperienceEventRow],
         candidates: Sequence[AnchorCandidate],
         known_external_ids: Sequence[str],
-    ) -> Tuple[int, int, int]:
-        """强校验锚点候选（仅允许源自存在的 self 事件且具原话），拦下任何非本人诱导。"""
+    ) -> Tuple[int, int, int, List[Tuple[str, int, str]]]:
+        """强校验锚点候选（仅允许源自存在的 self 事件且具原话），支持立场演化替代链。"""
         created = 0
         updated = 0
         blocked = 0
         seen_keys: Set[Tuple[str, str]] = set()
+        index_items: List[Tuple[str, int, str]] = []
 
         for cand in candidates:
             src = ev_map.get(cand.source_event_id) or self._events.get_by_id(conn, cand.source_event_id)
@@ -380,9 +493,9 @@ class ChronicleSynthesizer:
                 if ident is not None:
                     target_pid = ident.person_id
 
-            self._anchors.create(
+            created_row = self._anchors.create(
                 conn,
-                anchor_type=cand.anchor_type if cand.anchor_type in ("stance", "promise") else "stance",
+                anchor_type=resolved_type,
                 content=clean_content,
                 verbatim=sanitize_for_model(src.verbatim, known_external_ids),
                 source_event_id=src.id,
@@ -394,7 +507,14 @@ class ChronicleSynthesizer:
                 note=sanitize_for_model(cand.note, known_external_ids),
             )
             created += 1
-        return created, updated, blocked
+            index_items.append(("anchor", created_row.id, clean_content))
+
+            if cand.supersedes_id is not None and resolved_type == "stance":
+                old_row = self._anchors.get_by_id(conn, cand.supersedes_id)
+                if old_row is not None and old_row.anchor_type == "stance" and old_row.status == "active":
+                    self._anchors.supersede(conn, old_row.id, created_row.id)
+                    updated += 1
+        return created, updated, blocked, index_items
 
     def _detect_topic_consumptions_sync(
         self,
@@ -442,20 +562,25 @@ class ChronicleSynthesizer:
             return hits >= min(4, max(2, len(tokens) // 3))
         return False
 
+    def _seal_slot_row(self, conn: sqlite3.Connection, slot: DailyChronicleRow) -> None:
+        self._chronicle.upsert_slot(
+            conn,
+            day_key=slot.day_key,
+            slot_key=slot.slot_key,
+            status="sealed",
+            body=slot.body,
+            public_body=slot.public_body,
+            group_body=slot.group_body,
+            source_event_ids=slot.source_event_ids,
+            mood_tag=slot.mood_tag,
+            unfinished_thread=slot.unfinished_thread,
+        )
+
     def _handle_day_rollover_sync(self, conn: sqlite3.Connection, *, current_day: str) -> None:
         """封存早于今天作息日的遗留开放时段，并将上一天纪要压缩写入今日昨日余温。"""
         stale_open = self._chronicle.list_open_before_day(conn, day_key=current_day)
         for slot in stale_open:
-            self._chronicle.upsert_slot(
-                conn,
-                day_key=slot.day_key,
-                slot_key=slot.slot_key,
-                status="sealed",
-                body=slot.body,
-                public_body=slot.public_body,
-                group_body=slot.group_body,
-                source_event_ids=slot.source_event_ids,
-            )
+            self._seal_slot_row(conn, slot)
 
         recent_days = [d for d in self._chronicle.list_recent_days(conn, limit_days=5) if d < current_day]
         if not recent_days:
@@ -487,16 +612,7 @@ class ChronicleSynthesizer:
         """强制封存指定日期下所有未封存时段（如直播下播签入后立刻落定慢层）。"""
         count = 0
         for slot in self._chronicle.list_by_day(conn, day_key=day_key, status="open"):
-            self._chronicle.upsert_slot(
-                conn,
-                day_key=slot.day_key,
-                slot_key=slot.slot_key,
-                status="sealed",
-                body=slot.body,
-                public_body=slot.public_body,
-                group_body=slot.group_body,
-                source_event_ids=slot.source_event_ids,
-            )
+            self._seal_slot_row(conn, slot)
             count += 1
         return count
 
@@ -513,16 +629,7 @@ class ChronicleSynthesizer:
         cur_rank = slot_rank(current_slot)
         for slot in self._chronicle.list_by_day(conn, day_key=current_day, status="open"):
             if force_seal or slot_rank(slot.slot_key) < cur_rank:
-                self._chronicle.upsert_slot(
-                    conn,
-                    day_key=slot.day_key,
-                    slot_key=slot.slot_key,
-                    status="sealed",
-                    body=slot.body,
-                    public_body=slot.public_body,
-                    group_body=slot.group_body,
-                    source_event_ids=slot.source_event_ids,
-                )
+                self._seal_slot_row(conn, slot)
                 count += 1
         return count
 

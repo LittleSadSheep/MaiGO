@@ -1,35 +1,17 @@
-"""MaiGO 核心业务服务包。"""
+"""MaiGO 核心领域与记忆引擎包。"""
 
-from maigo.services.identity import (
-    ActorCardProjection,
-    IdentityService,
-    PersonDirectoryEntry,
-    PersonWithIdentities,
-)
-from maigo.services.maintenance import MaintenanceService
-from maigo.services.projector import (
+from maigo.core.context import (
     AnchorProjection,
     ContextProjection,
     TopicProjection,
     ViewProjector,
 )
-from maigo.services.retrieval import (
-    EmbeddingClient,
-    HybridRecallService,
-    OpenAIEmbeddingClient,
-)
-from maigo.services.sanitizer import (
-    allowed_visibilities,
-    describe_visibility_scope,
-    normalize_visibility,
-    sanitize_for_model,
-)
-from maigo.services.synthesizer import (
+from maigo.core.digest import (
     BackgroundSynthesizer,
     ChronicleSynthesizer,
     SynthesisReport,
 )
-from maigo.services.synthesizer_rules import (
+from maigo.core.digest_rules import (
     SLOT_LABELS,
     AnchorCandidate,
     ArcCandidate,
@@ -37,6 +19,24 @@ from maigo.services.synthesizer_rules import (
     SynthesisLLMClient,
     TopicCandidate,
     compute_day_and_slot,
+)
+from maigo.core.identity import (
+    ActorCardProjection,
+    IdentityService,
+    PersonDirectoryEntry,
+    PersonWithIdentities,
+)
+from maigo.core.maintenance import MaintenanceService
+from maigo.core.privacy import (
+    allowed_visibilities,
+    describe_visibility_scope,
+    normalize_visibility,
+    sanitize_for_model,
+)
+from maigo.core.recall import (
+    EmbeddingClient,
+    HybridRecallService,
+    OpenAIEmbeddingClient,
 )
 
 __all__ = [

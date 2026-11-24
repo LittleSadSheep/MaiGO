@@ -1,8 +1,6 @@
 """MaiGO 存储包：SQLite 连接管理、迁移与仓储导出。"""
 
-from maigo.storage.db import MaiGODatabase
-from maigo.storage.migrations import apply_migrations, verify_expected_tables
-from maigo.storage.models import (
+from maigo.core.models import (
     ActorRef,
     BindTokenRow,
     BranchPresenceRow,
@@ -20,6 +18,8 @@ from maigo.storage.models import (
     SaveStateRow,
     TopicSeedRow,
 )
+from maigo.storage.db import MaiGODatabase
+from maigo.storage.migrations import apply_migrations, verify_expected_tables
 from maigo.storage.schema import EXPECTED_TABLES, SCHEMA_VERSION, build_schema_sql
 
 __all__ = [
@@ -33,7 +33,7 @@ __all__ = [
     "ExperienceEventRow",
     "IdentityCandidateRow",
     "LifeArcRow",
-    "NewExperienceEvent",
+    "MaiGODatabase",
     "NewExperienceEvent",
     "PersonaAnchorRow",
     "PersonIdentityRow",
@@ -41,7 +41,6 @@ __all__ = [
     "PersonRow",
     "SCHEMA_VERSION",
     "SaveStateRow",
-    "MaiGODatabase",
     "TopicSeedRow",
     "apply_migrations",
     "build_schema_sql",

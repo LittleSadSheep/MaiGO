@@ -14,16 +14,16 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from maigo.runtime import ClockMs, get_logger, now_ms
-from maigo.services.sanitizer import allowed_visibilities, describe_visibility_scope, sanitize_for_model
-from maigo.storage.db import MaiGODatabase
-from maigo.storage.models import (
+from maigo.core.models import (
     ActorRef,
     BindTokenRow,
     IdentityCandidateRow,
     PersonIdentityRow,
     PersonRow,
 )
+from maigo.core.privacy import allowed_visibilities, describe_visibility_scope, sanitize_for_model
+from maigo.runtime import ClockMs, get_logger, now_ms
+from maigo.storage.db import MaiGODatabase
 from maigo.storage.repos import ExperienceEventRepo, PersonRepo
 
 logger = get_logger("services.identity")

@@ -11,8 +11,7 @@ from typing import Annotated, Any, Dict, Optional, Set
 from fastapi import Depends, Header, HTTPException, Query, Request
 
 from maigo.config import MaiGOConfig
-from maigo.runtime import ClockMs, get_logger, now_ms
-from maigo.services import (
+from maigo.core import (
     BackgroundSynthesizer,
     ChronicleSynthesizer,
     EmbeddingClient,
@@ -21,7 +20,8 @@ from maigo.services import (
     MaintenanceService,
     ViewProjector,
 )
-from maigo.services.synthesizer_rules import SynthesisLLMClient
+from maigo.core.digest_rules import SynthesisLLMClient
+from maigo.runtime import ClockMs, get_logger, now_ms
 from maigo.storage import MaiGODatabase
 from maigo.storage.repos import (
     DailyChronicleRepo,

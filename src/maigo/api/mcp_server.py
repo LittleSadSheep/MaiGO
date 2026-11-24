@@ -20,8 +20,8 @@ from starlette.responses import Response
 from starlette.types import Receive, Scope, Send
 
 from maigo.api.state import MaiGOContext, verify_token_value
+from maigo.core.privacy import normalize_visibility
 from maigo.runtime import get_logger
-from maigo.services.sanitizer import normalize_visibility
 
 logger = get_logger("api.mcp")
 

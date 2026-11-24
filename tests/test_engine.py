@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
 from maigo.config import SynthesizerConfig
-from maigo.services import (
+from maigo.core import (
     AnchorCandidate,
     ChronicleSynthesizer,
     IdentityService,
@@ -371,8 +371,8 @@ async def test_same_slot_resynthesis_does_not_resurrect_closed_promise(tmp_path)
 
 
 async def test_v2_life_arcs_mood_wake_hint_stance_evolution_and_stale_promises(tmp_path) -> None:
-    """验证 v0.2 活人感编年：温层主线、情绪底色、昨晚熬夜上午留白、立场演进及陈年承诺自动 stale。"""
-    from maigo.services import ArcCandidate
+    """验证 v0.2 持续主线、情绪标注、早间作息留白、观点取代及超期约定自动标 stale。"""
+    from maigo.core import ArcCandidate
 
     class _EvolutionLLM:
         def __init__(self) -> None:

@@ -30,8 +30,8 @@ from maigo.api.schemas import (
     TopicProjectionOut,
 )
 from maigo.api.state import CtxDep, require_auth
+from maigo.core.privacy import normalize_visibility
 from maigo.runtime import get_logger
-from maigo.services.sanitizer import normalize_visibility
 from maigo.storage import ActorRef, NewExperienceEvent
 from maigo.storage.schema import SCHEMA_VERSION
 

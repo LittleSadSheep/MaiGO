@@ -19,8 +19,8 @@ import uvicorn
 
 from maigo.api import create_app
 from maigo.config import MaiGOConfig, load_config
+from maigo.core import HybridRecallService, IdentityService, MaintenanceService
 from maigo.runtime import setup_logging
-from maigo.services import HybridRecallService, IdentityService, MaintenanceService
 from maigo.storage import MaiGODatabase
 
 

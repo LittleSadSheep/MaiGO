@@ -9,10 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from maigo.config import SynthesizerConfig
-from maigo.runtime import ClockMs, get_logger, now_ms
-from maigo.services.identity import IdentityService
-from maigo.services.sanitizer import sanitize_for_model
-from maigo.services.synthesizer_rules import (
+from maigo.core.digest_rules import (
     AnchorCandidate,
     OpenAISynthesisClient,
     SlotSynthesisDraft,
@@ -22,8 +19,11 @@ from maigo.services.synthesizer_rules import (
     compute_day_and_slot,
     slot_rank,
 )
+from maigo.core.identity import IdentityService
+from maigo.core.models import DailyChronicleRow, ExperienceEventRow, TopicSeedRow
+from maigo.core.privacy import sanitize_for_model
+from maigo.runtime import ClockMs, get_logger, now_ms
 from maigo.storage.db import MaiGODatabase
-from maigo.storage.models import DailyChronicleRow, ExperienceEventRow, TopicSeedRow
 from maigo.storage.repos import (
     DailyChronicleRepo,
     ExperienceEventRepo,
@@ -33,8 +33,8 @@ from maigo.storage.repos import (
 )
 
 if TYPE_CHECKING:
-    from maigo.services.maintenance import MaintenanceService
-    from maigo.services.retrieval import HybridRecallService
+    from maigo.core.maintenance import MaintenanceService
+    from maigo.core.recall import HybridRecallService
 
 logger = get_logger("services.synthesizer")
 

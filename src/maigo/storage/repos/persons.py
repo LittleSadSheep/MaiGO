@@ -5,14 +5,14 @@ from __future__ import annotations
 import sqlite3
 from typing import List, Optional, Sequence
 
-from maigo.runtime import ClockMs, now_ms
-from maigo.storage.models import (
+from maigo.core.models import (
     BindTokenRow,
     IdentityCandidateRow,
     PersonIdentityRow,
     PersonInteractionRow,
     PersonRow,
 )
+from maigo.runtime import ClockMs, now_ms
 
 
 def _row_to_person(row: sqlite3.Row) -> PersonRow:

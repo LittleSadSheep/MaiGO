@@ -17,9 +17,9 @@ from maigo.api.routes_dashboard import router as dashboard_router
 from maigo.api.routes_sync import public_router, router as sync_router
 from maigo.api.state import MaiGOContext, build_context
 from maigo.config import MaiGOConfig
+from maigo.core import EmbeddingClient
+from maigo.core.digest_rules import SynthesisLLMClient
 from maigo.runtime import ClockMs, get_logger, now_ms
-from maigo.services import EmbeddingClient
-from maigo.services.synthesizer_rules import SynthesisLLMClient
 
 logger = get_logger("api.app")
 

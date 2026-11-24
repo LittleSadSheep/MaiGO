@@ -6,8 +6,8 @@ import json
 import sqlite3
 from typing import Any, List, Optional, Sequence
 
+from maigo.core.models import TopicSeedRow
 from maigo.runtime import ClockMs, now_ms
-from maigo.storage.models import TopicSeedRow
 
 
 def _row_to_topic(row: sqlite3.Row) -> TopicSeedRow:

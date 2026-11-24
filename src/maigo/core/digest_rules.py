@@ -10,9 +10,9 @@ from typing import Dict, List, Optional, Protocol, Sequence, Tuple
 
 import httpx
 
+from maigo.core.models import DailyChronicleRow, ExperienceEventRow, LifeArcRow, PersonaAnchorRow
+from maigo.core.privacy import describe_visibility_scope, sanitize_for_model
 from maigo.runtime import get_logger
-from maigo.services.sanitizer import describe_visibility_scope, sanitize_for_model
-from maigo.storage.models import DailyChronicleRow, ExperienceEventRow, LifeArcRow, PersonaAnchorRow
 
 logger = get_logger("services.synthesizer.rules")
 

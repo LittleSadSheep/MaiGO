@@ -12,16 +12,16 @@ from typing import Dict, List, Optional, Protocol, Sequence, Tuple
 import httpx
 
 from maigo.config import EmbeddingConfig
-from maigo.runtime import ClockMs, get_logger, now_ms
-from maigo.services.identity import IdentityService
-from maigo.services.sanitizer import (
+from maigo.core.identity import IdentityService
+from maigo.core.models import ExperienceEventRow, LifeArcRow, PersonaAnchorRow
+from maigo.core.privacy import (
     allowed_visibilities,
     describe_visibility_scope,
     normalize_visibility,
     sanitize_for_model,
 )
+from maigo.runtime import ClockMs, get_logger, now_ms
 from maigo.storage.db import MaiGODatabase
-from maigo.storage.models import ExperienceEventRow, LifeArcRow, PersonaAnchorRow
 from maigo.storage.repos import EmbeddingRepo, ExperienceEventRepo, LifeArcRepo, PersonaAnchorRepo, PersonRepo
 
 logger = get_logger("services.retrieval")
@@ -105,7 +105,14 @@ def _content_hash(text: str) -> str:
 
 def _branch_label(branch_id: str) -> str:
     clean = branch_id.strip().lower()
-    mapping = {"maibot": "QQ群", "amaidesu": "直播间", "bilibili_ops": "B站", "x_ops": "X", "daily_feeder": "日常浏览"}
+    mapping = {
+        "maibot": "QQ群",
+        "amaidesu": "直播间",
+        "bilibili_ops": "B站",
+        "x_ops": "X",
+        "rss_collector": "订阅浏览",
+        "daily_feeder": "日常浏览",
+    }
     if clean in mapping:
         return mapping[clean]
     if "bili" in clean:

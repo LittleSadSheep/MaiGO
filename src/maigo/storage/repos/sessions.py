@@ -6,8 +6,8 @@ import json
 import sqlite3
 from typing import Any, Dict, List, Optional
 
+from maigo.core.models import BranchPresenceRow, CheckoutSessionRow, SaveStateRow
 from maigo.runtime import ClockMs, now_ms
-from maigo.storage.models import BranchPresenceRow, CheckoutSessionRow, SaveStateRow
 
 
 def _row_to_checkout(row: sqlite3.Row) -> CheckoutSessionRow:

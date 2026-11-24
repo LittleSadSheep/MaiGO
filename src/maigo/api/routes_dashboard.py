@@ -28,8 +28,8 @@ from maigo.api.schemas import (
     TopicPatchIn,
 )
 from maigo.api.state import CtxDep, require_auth
-from maigo.services.sanitizer import normalize_visibility
-from maigo.services.synthesizer_rules import SLOT_LABELS, compute_day_and_slot
+from maigo.core.digest_rules import SLOT_LABELS, compute_day_and_slot
+from maigo.core.privacy import normalize_visibility
 from maigo.storage import NewExperienceEvent
 
 router = APIRouter(prefix="/api/v1/dashboard", dependencies=[Depends(require_auth)])

@@ -14,17 +14,17 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
-from maigo.runtime import ClockMs, now_ms
-from maigo.services.identity import ActorCardProjection, IdentityService, PersonDirectoryEntry
-from maigo.services.sanitizer import (
+from maigo.core.digest_rules import SLOT_LABELS, compute_day_and_slot, slot_rank
+from maigo.core.identity import ActorCardProjection, IdentityService, PersonDirectoryEntry
+from maigo.core.models import CheckoutSessionRow, DailyChronicleRow, LifeArcRow, PersonaAnchorRow
+from maigo.core.privacy import (
     allowed_visibilities,
     describe_visibility_scope,
     normalize_visibility,
     sanitize_for_model,
 )
-from maigo.services.synthesizer_rules import SLOT_LABELS, compute_day_and_slot, slot_rank
+from maigo.runtime import ClockMs, now_ms
 from maigo.storage.db import MaiGODatabase
-from maigo.storage.models import CheckoutSessionRow, DailyChronicleRow, LifeArcRow, PersonaAnchorRow
 from maigo.storage.repos import (
     DailyChronicleRepo,
     ExperienceEventRepo,
@@ -36,7 +36,7 @@ from maigo.storage.repos import (
 )
 
 if TYPE_CHECKING:
-    from maigo.services.retrieval import HybridRecallService
+    from maigo.core.recall import HybridRecallService
 
 _BRANCH_LABELS = {
     "maibot": "QQ群",
@@ -44,6 +44,8 @@ _BRANCH_LABELS = {
     "bilibili_ops": "B站",
     "x_ops": "X",
     "mc_runner": "Minecraft",
+    "rss_collector": "订阅浏览",
+    "daily_feeder": "日常浏览",
 }
 
 

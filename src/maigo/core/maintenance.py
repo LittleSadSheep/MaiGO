@@ -8,9 +8,9 @@ import sqlite3
 from typing import Any, Dict, List, Optional
 
 from maigo.config import BackupConfig, MaiGOConfig
+from maigo.core.digest_rules import SLOT_LABELS, compute_day_and_slot
+from maigo.core.privacy import allowed_visibilities, normalize_visibility, sanitize_for_model
 from maigo.runtime import ClockMs, get_logger, now_ms
-from maigo.services.sanitizer import allowed_visibilities, normalize_visibility, sanitize_for_model
-from maigo.services.synthesizer_rules import SLOT_LABELS, compute_day_and_slot
 from maigo.storage.db import MaiGODatabase
 from maigo.storage.repos import (
     DailyChronicleRepo,

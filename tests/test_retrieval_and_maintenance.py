@@ -9,8 +9,8 @@ import sqlite3
 from typing import List, Optional, Sequence
 
 from maigo.config import BackupConfig, EmbeddingConfig, MaiGOConfig
+from maigo.core import HybridRecallService, IdentityService, MaintenanceService
 from maigo.main import main as cli_main
-from maigo.services import HybridRecallService, IdentityService, MaintenanceService
 from maigo.storage import ActorRef, MaiGODatabase, NewExperienceEvent
 from maigo.storage.repos import DailyChronicleRepo, ExperienceEventRepo, LifeArcRepo, PersonaAnchorRepo, PersonRepo
 

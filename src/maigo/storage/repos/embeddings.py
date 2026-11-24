@@ -5,8 +5,8 @@ from __future__ import annotations
 import sqlite3
 from typing import List, Optional
 
+from maigo.core.models import EmbeddingRow
 from maigo.runtime import ClockMs, now_ms
-from maigo.storage.models import EmbeddingRow
 
 
 def _row_to_embedding(row: sqlite3.Row) -> EmbeddingRow:

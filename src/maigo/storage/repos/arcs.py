@@ -6,8 +6,8 @@ import json
 import sqlite3
 from typing import Any, List, Optional, Sequence
 
+from maigo.core.models import LifeArcRow
 from maigo.runtime import ClockMs, now_ms
-from maigo.storage.models import LifeArcRow
 
 
 def _row_to_arc(row: sqlite3.Row) -> LifeArcRow:

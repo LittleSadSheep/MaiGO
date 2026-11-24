@@ -41,6 +41,7 @@ config.toml.backup*
 dashboard/node_modules/
 dashboard/dist/
 dashboard/.vite/
+dashboard/pnpm-lock.yaml
 dashboard/tsconfig.tsbuildinfo
 
 # 本地机器规则、工作树协调与临时草稿（不入版本库）

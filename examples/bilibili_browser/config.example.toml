@@ -1,0 +1,54 @@
+# MaiGO 独立 B 站日常刷站示例配置（建议复制为 bilibili.toml 后按需调整）
+
+maigo_url = "http://127.0.0.1:8768"
+# 若 MaiGO 服务端配置了 auth_token，请填同一令牌，或通过环境变量 MAIGO_AUTH_TOKEN 传入
+auth_token = ""
+branch_id = "bilibili_ops"
+
+# 外部 bili CLI 可执行文件及可选隔离目录（不纳入 MaiGO 自身依赖）
+bili_bin = "bili"
+bili_home = ""
+bili_state_dir = ""
+
+state_file = "data/bilibili_browser_seen.json"
+# recommend：日常刷个性化首页推荐；seed：冷启动按关键词/分区播种
+mode = "recommend"
+recommend_count = 12
+seed_queries = ["独立游戏建筑实况", "桌面手工制作"]
+seed_zones = ["game", "tech"]
+
+max_watch_per_run = 2
+max_duration_seconds = 3600
+watch_comments = 5
+# 默认仅读取已有字幕（subtitle），避免自动触发重型本地转写；可按需改为 auto / none
+watch_transcript = "subtitle"
+watch_max_chars = 3000
+
+# 周期巡航间隔（秒）与拟人随机抖动范围
+interval_seconds = 7200
+jitter_seconds = 1200
+active_hours = [9, 23]
+
+persona_name = "麦麦"
+persona_profile = "喜欢像素沙盒建造、轻松手工制作和有生活感的小科普，不爱看焦虑营销与引战内容。"
+interests = ["沙盒", "建筑", "手工", "科普", "猫"]
+avoid_topics = ["标题党", "引战", "贩卖焦虑", "投资理财"]
+
+[llm]
+# 建议接入小模型做封面选片与观后打分；留空时自动回落本地关键词规则
+base_url = ""
+api_key = ""
+model = ""
+timeout_ms = 15000
+
+[feedback]
+# 推荐先用 --dry-run 观察几轮，确认口味后再逐步放开点赞/收藏/关注
+record_history = true
+allow_like = false
+allow_fav = false
+fav_folder = ""
+allow_follow = false
+like_min_score = 3
+fav_min_score = 4
+follow_min_score = 5
+remember_min_score = 3

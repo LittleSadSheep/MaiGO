@@ -74,21 +74,47 @@ class MaiGOConfig(BaseModel):
     backup: BackupConfig = Field(default_factory=BackupConfig, description="在线热备份配置")
 
 
+def _resolve_relative_path(raw_path: str, *, base_dir: Path) -> str:
+    """将非空相对路径统一锚定到配置文件所在目录，绝对路径保持原样。"""
+    cleaned = raw_path.strip()
+    if not cleaned:
+        return raw_path
+    candidate = Path(cleaned)
+    return raw_path if candidate.is_absolute() else str((base_dir / candidate).resolve())
+
+
 def load_config(
     config_path: Optional[Path | str] = None,
     *,
     env: Optional[Mapping[str, str]] = None,
 ) -> MaiGOConfig:
-    """从 TOML 文件与环境变量加载配置，并保证覆盖顺序可预测。"""
+    """从 TOML 文件与环境变量加载配置，并将相对数据/产物路径锚定至配置文件目录。"""
     raw: dict[str, Any] = {}
+    base_dir: Optional[Path] = None
     if config_path is not None:
         path = Path(config_path)
         if path.exists():
+            base_dir = path.resolve().parent
             raw = tomllib.loads(path.read_text(encoding="utf-8"))
 
     env_map = os.environ if env is None else env
     _apply_env_overrides(raw, env_map)
-    return MaiGOConfig.model_validate(raw)
+    cfg = MaiGOConfig.model_validate(raw)
+    if base_dir is None:
+        return cfg
+
+    resolved_db = (
+        cfg.db_path if cfg.db_path.strip() == ":memory:" else _resolve_relative_path(cfg.db_path, base_dir=base_dir)
+    )
+    resolved_dist = _resolve_relative_path(cfg.dashboard_dist_dir, base_dir=base_dir)
+    resolved_backup_dir = _resolve_relative_path(cfg.backup.dir, base_dir=base_dir)
+    return cfg.model_copy(
+        update={
+            "db_path": resolved_db,
+            "dashboard_dist_dir": resolved_dist,
+            "backup": cfg.backup.model_copy(update={"dir": resolved_backup_dir}),
+        }
+    )
 
 
 def _apply_section_env(

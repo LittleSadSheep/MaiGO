@@ -8,8 +8,8 @@ from pathlib import Path
 import sqlite3
 from typing import List, Optional, Sequence
 
-from maigo.config import BackupConfig, EmbeddingConfig, MaiGOConfig
-from maigo.core import HybridRecallService, IdentityService, MaintenanceService
+from maigo.config import BackupConfig, EmbeddingConfig, MaiGOConfig, SynthesizerConfig, load_config
+from maigo.core import ChronicleSynthesizer, HybridRecallService, IdentityService, MaintenanceService
 from maigo.main import main as cli_main
 from maigo.storage import ActorRef, MaiGODatabase, NewExperienceEvent
 from maigo.storage.repos import DailyChronicleRepo, ExperienceEventRepo, LifeArcRepo, PersonaAnchorRepo, PersonRepo
@@ -248,3 +248,67 @@ def test_cli_subcommands_doctor_backup_export(tmp_path: Path, capsys) -> None:
     cli_main(["--config", str(cfg_toml), "export-diary", "--day", "2026-11-24"])
     diary_out = capsys.readouterr().out
     assert "生活手账" in diary_out
+
+
+def test_load_config_resolves_relative_paths_against_config_dir(tmp_path: Path, monkeypatch, capsys) -> None:
+    """在不同工作目录下加载配置时，相对数据/看板/备份路径应锚定至 config.toml 所在目录。"""
+    app_dir = tmp_path / "app_root"
+    other_cwd = tmp_path / "elsewhere"
+    app_dir.mkdir(parents=True)
+    other_cwd.mkdir(parents=True)
+    (app_dir / "dashboard" / "dist").mkdir(parents=True)
+    (app_dir / "dashboard" / "dist" / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    cfg_toml = app_dir / "config.toml"
+    cfg_toml.write_text(
+        'db_path = "data/maigo.sqlite3"\ndashboard_dist_dir = "dashboard/dist"\n[backup]\ndir = "data/backups"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(other_cwd)
+    cfg = load_config(cfg_toml)
+    assert Path(cfg.db_path) == (app_dir / "data" / "maigo.sqlite3").resolve()
+    assert Path(cfg.dashboard_dist_dir) == (app_dir / "dashboard" / "dist").resolve()
+    assert Path(cfg.backup.dir) == (app_dir / "data" / "backups").resolve()
+
+    cli_main(["doctor", "--config", str(cfg_toml)])
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["ok"] is True
+    assert doc["dashboard_ready"] is True
+    assert (app_dir / "data" / "maigo.sqlite3").is_file()
+    assert not (other_cwd / "data").exists()
+
+
+async def test_idle_maintenance_creates_daily_backup_and_checkpoints_wal(tmp_path: Path) -> None:
+    """无未整理事件时，空闲例行维护应能生成当日幂等热备份并温和收拢 WAL。"""
+    clock = _MutableClock(_ms(2026, 11, 26, 11, 30))
+    db_file = tmp_path / "idle.sqlite3"
+    backup_dir = tmp_path / "backups"
+    cfg = MaiGOConfig(
+        db_path=str(db_file),
+        backup=BackupConfig(dir=str(backup_dir), keep_days=3, auto_daily=True),
+    )
+    db = MaiGODatabase(db_file, clock_ms=clock)
+    await db.initialize()
+
+    identity = IdentityService(db, identity_salt="test-salt")
+    maint = MaintenanceService(db, config=cfg, clock_ms=clock)
+    synth = ChronicleSynthesizer(
+        db,
+        identity=identity,
+        config=SynthesizerConfig(),
+        maintenance=maint,
+        auto_daily_backup=True,
+        clock_ms=clock,
+    )
+
+    await synth.run_idle_maintenance()
+    backups_first = maint.list_backups()
+    assert len(backups_first) == 1
+    assert maint.has_backup_for_day("2026-11-26") is True
+
+    # 同一作息日内重复触发保持幂等，不重复生成备份文件
+    clock.now_ms += 600_000
+    await synth.run_idle_maintenance()
+    assert len(maint.list_backups()) == 1
+    await db.close()

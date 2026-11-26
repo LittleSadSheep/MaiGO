@@ -266,6 +266,23 @@ class ChronicleSynthesizer:
         except Exception as exc:
             logger.warning(f"每日自动热备份失败（跳过本次）: {exc}")
 
+    async def run_idle_maintenance(self) -> None:
+        """无未处理事件时的后台例行维护：跨日封存、约定过期、温和 WAL 收拢与每日热备份。"""
+        now = int(self._clock_ms())
+        current_day, _ = compute_day_and_slot(
+            now, day_rollover_hour=self._rollover_hour, timezone_offset_hours=self._tz_offset
+        )
+        stale_before = now - max(1, int(self._config.stale_promise_days)) * 24 * 3600 * 1000
+
+        def _maintain(conn: sqlite3.Connection) -> None:
+            self._handle_day_rollover_sync(conn, current_day=current_day)
+            self._anchors.mark_stale_promises(conn, before_ms=stale_before)
+            # 在仅接收低写入心态心跳的空闲期定期做非阻塞 checkpoint，避免 WAL 持续膨胀
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+
+        await self._db.run(_maintain)
+        await self._maybe_run_daily_backup(current_day)
+
     async def _load_slot(self, *, day_key: str, slot_key: str) -> Optional[DailyChronicleRow]:
         def _op(conn: sqlite3.Connection) -> Optional[DailyChronicleRow]:
             return self._chronicle.get_slot(conn, day_key=day_key, slot_key=slot_key)
@@ -655,6 +672,7 @@ class BackgroundSynthesizer:
         self._wakeup = asyncio.Event()
         self._task: Optional[asyncio.Task[None]] = None
         self._last_run_ms = 0
+        self._last_maintenance_ms = 0
         self._stopped = False
 
     def start(self) -> None:
@@ -707,9 +725,16 @@ class BackgroundSynthesizer:
                 break
             try:
                 pending = await self._db.run(self._events.count_unsynthesized)
+                now_val = int(self._clock_ms())
                 if pending <= 0:
+                    if (
+                        self._last_maintenance_ms == 0
+                        or now_val - self._last_maintenance_ms >= self._config.min_interval_ms
+                    ):
+                        await self._synthesizer.run_idle_maintenance()
+                        self._last_maintenance_ms = now_val
                     continue
-                elapsed = int(self._clock_ms()) - self._last_run_ms
+                elapsed = now_val - self._last_run_ms
                 if pending >= self._config.batch_event_threshold or elapsed >= self._config.min_interval_ms:
                     await self.trigger_now(force_seal=False)
             except asyncio.CancelledError:

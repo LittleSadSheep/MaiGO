@@ -606,6 +606,15 @@ async def test_colloquial_query_term_extraction_and_record_type_priority(tmp_pat
                             "title": "同伴名册：小百合",
                             "content": "小百合（种类：女仆，状态：存活同伴）",
                         },
+                        {
+                            "idempotency_key": "m-long-workdoc",
+                            "record_type": "work_doc",
+                            "occurred_at_ms": _ms(2026, 11, 26, 22, 0),
+                            "title": "存档工作笔记（测试档）",
+                            "content": ("前置红石产线与采矿坐标记录。" * 40)
+                            + "营地东边新建的琥珀温室由女仆协助看护。"
+                            + ("后续储备清单与备忘条目。" * 40),
+                        },
                     ],
                 },
             )
@@ -617,6 +626,16 @@ async def test_colloquial_query_term_extraction_and_record_type_priority(tmp_pat
             txt = r_maid.json()["text"]
             assert "纸板狐" in txt or "小百合" in txt
             assert "猫娘" not in txt
+
+            # 超长 work_doc 必须按命中词做窗口摘录，不能把整篇上千字笔记原样塞进召回结果
+            r_doc = await client.get(
+                "/api/v1/views/recall",
+                params={"query": "琥珀温室", "days": 0, "limit": 2, "high_confidence_only": "true"},
+            )
+            assert r_doc.status_code == 200
+            doc_txt = r_doc.json()["text"]
+            assert "琥珀温室" in doc_txt
+            assert len(doc_txt) < 420
 
             r_noise = await client.get(
                 "/api/v1/views/recall",

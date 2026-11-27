@@ -184,6 +184,31 @@ def _content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
 
 
+def _excerpt_around_terms(text: str, terms: Sequence[str], *, max_len: int = 320) -> str:
+    """对超长原件（如 2000 字存档工作笔记）按首个命中实词截取上下文窗口，避免单条撑爆召回篇幅。"""
+    compact = " ".join(text.split()).strip()
+    if len(compact) <= max_len:
+        return compact
+    lowered = compact.lower()
+    hit_pos = -1
+    for tok in terms:
+        clean_tok = tok.strip().lower()
+        if not clean_tok:
+            continue
+        pos = lowered.find(clean_tok)
+        if pos >= 0:
+            hit_pos = pos
+            break
+    if hit_pos < 0 or hit_pos < max_len // 2:
+        return compact[: max_len - 1].rstrip() + "…"
+    start = max(0, hit_pos - max_len // 3)
+    end = min(len(compact), start + max_len - 2)
+    snippet = compact[start:end].strip()
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(compact) else ""
+    return f"{prefix}{snippet}{suffix}"
+
+
 def _branch_label(branch_id: str) -> str:
     clean = branch_id.strip().lower()
     mapping = {
@@ -762,7 +787,7 @@ class HybridRecallService:
         kind_word = _RECORD_TYPE_LABELS.get(rec.record_type, rec.record_type)
         prefix = f"[{dtag} · {ep_label} · {kind_word}]" if dtag else f"[{ep_label} · {kind_word}]"
         clean_title = sanitize_for_model(rec.title, all_ext_ids)
-        clean_body = sanitize_for_model(rec.content, all_ext_ids)
+        clean_body = _excerpt_around_terms(sanitize_for_model(rec.content, all_ext_ids), terms, max_len=320)
         head = f"{clean_title}：{clean_body}" if (clean_title and clean_title not in clean_body) else (clean_body or clean_title)
         quote = f" 原话：「{sanitize_for_model(rec.verbatim, all_ext_ids)[:240]}」" if rec.verbatim and rec.verbatim != rec.content else ""
         raw = f"{rec.title} {rec.content} {rec.verbatim}"

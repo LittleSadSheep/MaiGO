@@ -23,7 +23,9 @@ from maigo.storage import MaiGODatabase
 from maigo.storage.repos import (
     DailyChronicleRepo,
     EmbeddingRepo,
+    EpisodeRepo,
     ExperienceEventRepo,
+    KnowledgeGraphRepo,
     LifeArcRepo,
     PersonaAnchorRepo,
     PersonRepo,
@@ -85,6 +87,8 @@ class MaiGOContext:
     persons_repo: PersonRepo = field(init=False)
     sessions_repo: SessionRepo = field(init=False)
     embeddings_repo: EmbeddingRepo = field(init=False)
+    episodes_repo: EpisodeRepo = field(init=False)
+    knowledge_repo: KnowledgeGraphRepo = field(init=False)
 
     def __post_init__(self) -> None:
         self.events_repo = ExperienceEventRepo(clock_ms=self.clock_ms)
@@ -95,6 +99,8 @@ class MaiGOContext:
         self.persons_repo = PersonRepo(clock_ms=self.clock_ms)
         self.sessions_repo = SessionRepo(clock_ms=self.clock_ms)
         self.embeddings_repo = EmbeddingRepo(clock_ms=self.clock_ms)
+        self.episodes_repo = EpisodeRepo(clock_ms=self.clock_ms)
+        self.knowledge_repo = KnowledgeGraphRepo(clock_ms=self.clock_ms)
 
 
 def build_context(

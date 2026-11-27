@@ -63,7 +63,7 @@
 4. 混合回忆检索：`GET /api/v1/views/recall`
    查询参数为 `query`、`days`（默认 `30`，`0` 表示不限天数）、`limit`、`target_visibility`、`branch_id`（可选，降低同端近期群聊回声权重）、`high_confidence_only`（可选，供自动预召回开启宁缺毋滥强命中门槛）、`include_structured`（可选，返回结构化命中列表与 `strong_hit` 标记），内部与 MCP 工具共用同一检索服务，返回附带日期与场次来源锚点的脱敏结果。
 5. 原件书库写入：`POST /api/v1/archive/ingest`
-   按场次（`episode`）与细粒度证据（`records`，如 `game_event`、`speech`、`timeline_chunk`、`work_doc`、`creature`、`archive_line`）幂等归档到 L0 原件书库并异步建向量索引；原件书库不进入日内时间线或稳定背景，仅供按需回忆检索。
+   按场次（`episode`）与细粒度证据（`records`，如 `game_event`、`speech`、`timeline_chunk`、`work_doc`、`creature`、`archive_line`）幂等归档到 L0 原件书库并异步建向量索引；分片续传同一场次时可省略完整 `episode` 仅传 `external_episode_id`（顶层或单条记录级）自动绑定既有场次。原件书库不进入日内时间线或稳定背景，仅供按需回忆检索。
 6. 实体关系图谱写入：`POST /api/v1/knowledge/ingest`
    批量幂等登记实体节点（`entities`）与关系事实边（`relations`），自动按已绑定账号关联 `person_id` 并跳过遗忘名单账号，同时供跨端人物摘要与按需回忆检索使用。
 7. 状态变更订阅：`GET /api/v1/stream/notifications`
@@ -140,7 +140,7 @@ sequenceDiagram
 1. 今日时间线（`TimelineView.vue`）：支持按作息日切换查看各时段纪要、情绪标注与未完事项；包含**快捷录入**、**持续主线**管理（`GET/POST/PATCH/DELETE /api/v1/dashboard/arcs`）以及**记录导出** Markdown 面板（`GET /api/v1/dashboard/diary/export`）。
 2. 观点与话题（`StancesTopicsView.vue`）：管理观点与约定（支持状态 `active`、`superseded`、`open`、`closed`、`stale`、`void` 及重新激活，`PATCH /api/v1/dashboard/anchors/{id}`）及话题池与消费轨迹。
 3. 人物与账号（`PersonsView.vue`）：维护跨端人物档案、手工绑定或签发/核销自助口令、审核疑似同人候选、按可见等级预览模型所见文本以及执行遗忘清除。
-4. 接入监控与调试（`MonitorView.vue`）：查看接入分支状态与心跳时间，投递调试事件并实时预览指定分支和可见等级下的稳定背景、实时动态与在场人物摘要。
+4. 接入监控与调试（`MonitorView.vue`）：查看接入分支状态与心跳时间、三层记忆库规模（L1/L0/L2/向量计数与最近入库场次，支持 5 秒自动刷新跟踪回填进度），并投递调试事件实时预览指定分支和可见等级下的稳定背景、实时动态与在场人物摘要。
 
 顶栏同时对接 `GET /api/v1/dashboard/status` 展示整理/检索模式及 Schema 版本，并提供 `POST /api/v1/dashboard/backup` 触发在线热备份。
 

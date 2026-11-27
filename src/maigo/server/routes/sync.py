@@ -362,11 +362,15 @@ async def ingest_archive(payload: ArchiveIngestIn, ctx: CtxDep) -> ArchiveIngest
     ) -> Tuple[Optional[int], List[int], int, List[Tuple[str, int, str]]]:
         ep_id: Optional[int] = None
         embed_items: List[Tuple[str, int, str]] = []
+        ext_ep_cache: Dict[str, Optional[int]] = {}
+
+        # 解析本批默认归属场次：携带完整 episode 时先幂等登记，仅携带 external_episode_id 时复用已有场次 ID（供分片续传）
         if payload.episode is not None:
             ep_in = payload.episode
+            ep_branch = ep_in.branch_id.strip() or payload.branch_id
             ep_row = ctx.episodes_repo.upsert_episode(
                 conn,
-                branch_id=ep_in.branch_id.strip() or payload.branch_id,
+                branch_id=ep_branch,
                 external_episode_id=ep_in.external_episode_id,
                 kind=ep_in.kind,
                 title=ep_in.title,
@@ -379,13 +383,33 @@ async def ingest_archive(payload: ArchiveIngestIn, ctx: CtxDep) -> ArchiveIngest
                 metadata=ep_in.metadata,
             )
             ep_id = ep_row.id
+            ext_ep_cache[ep_row.external_episode_id] = ep_row.id
             if ep_row.overview:
                 embed_items.append(("episode", ep_row.id, f"{ep_row.title} {ep_row.overview}".strip()))
+        elif payload.external_episode_id and payload.external_episode_id.strip():
+            ext_key = payload.external_episode_id.strip()
+            existing = ctx.episodes_repo.get_by_external(
+                conn, branch_id=payload.branch_id, external_episode_id=ext_key
+            )
+            ep_id = existing.id if existing is not None else None
+            ext_ep_cache[ext_key] = ep_id
+
+        def _resolve_record_episode_id(rec_ext_id: Optional[str]) -> Optional[int]:
+            # 单条记录显式指定 external_episode_id 时优先按该场次绑定，否则沿用本批默认场次
+            clean = (rec_ext_id or "").strip()
+            if not clean:
+                return ep_id
+            if clean not in ext_ep_cache:
+                found = ctx.episodes_repo.get_by_external(
+                    conn, branch_id=payload.branch_id, external_episode_id=clean
+                )
+                ext_ep_cache[clean] = found.id if found is not None else None
+            return ext_ep_cache[clean] if ext_ep_cache[clean] is not None else ep_id
 
         new_records = [
             NewEpisodeRecord(
                 idempotency_key=rec.idempotency_key,
-                episode_id=ep_id,
+                episode_id=_resolve_record_episode_id(rec.external_episode_id),
                 branch_id=payload.branch_id,
                 record_type=rec.record_type,
                 actor_role=rec.actor_role,

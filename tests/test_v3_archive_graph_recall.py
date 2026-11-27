@@ -8,8 +8,9 @@ import sqlite3
 from typing import List, Optional, Sequence
 
 import httpx
+from httpx import ASGITransport, AsyncClient
 
-from maigo.config import EmbeddingConfig, MaiGOConfig, SynthesizerConfig
+from maigo.config import BackupConfig, EmbeddingConfig, MaiGOConfig, SynthesizerConfig
 from maigo.core import ChronicleSynthesizer, IdentityService
 from maigo.core.digest_rules import SlotSynthesisDraft
 from maigo.core.models import ExperienceEventRow
@@ -440,3 +441,108 @@ async def test_rule_fallback_slot_is_rewritten_by_idle_llm(tmp_path: Path) -> No
     assert row_llm.draft_source == "llm"
     assert "自动化产线" in row_llm.body
     await db.close()
+
+
+async def test_archive_chunked_ingest_binds_episode_and_status_reports_progress(tmp_path: Path) -> None:
+    """分片写入同一场 L0 原件时，后续批次仅传 external_episode_id 也必须绑定到同一场次并在看板状态可见。"""
+    clock = _MutableClock(_ms(2026, 11, 27, 13, 0))
+    cfg = MaiGOConfig(
+        db_path=str(tmp_path / "chunked.sqlite3"),
+        auth_token="",
+        dashboard_dist_dir=str(tmp_path / "no_dist"),
+        synthesizer=SynthesizerConfig(auto_background=False),
+        backup=BackupConfig(dir=str(tmp_path / "backups")),
+    )
+    app = create_app(cfg, clock_ms=clock)
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # 第 1 片：带完整 episode 元数据建档
+            r1 = await client.post(
+                "/api/v1/archive/ingest",
+                json={
+                    "branch_id": "amaidesu",
+                    "episode": {
+                        "external_episode_id": "ep-chunk-99",
+                        "kind": "live",
+                        "title": "分片测试场·动力锯修桥",
+                        "platform": "bilibili",
+                        "started_at_ms": _ms(2026, 11, 25, 21, 0),
+                        "ended_at_ms": _ms(2026, 11, 25, 23, 0),
+                    },
+                    "records": [
+                        {
+                            "idempotency_key": "chunk-rec-1",
+                            "record_type": "archive_line",
+                            "occurred_at_ms": _ms(2026, 11, 25, 21, 10),
+                            "title": "开场准备材料",
+                            "content": "带齐木板和齿轮准备修木桥",
+                        }
+                    ],
+                },
+            )
+            assert r1.status_code == 200
+            ep_id = r1.json()["episode_id"]
+            assert ep_id is not None
+
+            # 第 2 片：省略完整 episode，仅传顶层 external_episode_id 续传
+            r2 = await client.post(
+                "/api/v1/archive/ingest",
+                json={
+                    "branch_id": "amaidesu",
+                    "episode": None,
+                    "external_episode_id": "ep-chunk-99",
+                    "records": [
+                        {
+                            "idempotency_key": "chunk-rec-2",
+                            "record_type": "speech",
+                            "occurred_at_ms": _ms(2026, 11, 25, 21, 35),
+                            "title": "主播原话",
+                            "content": "测试分片独有词条青金石风车转得飞快",
+                        }
+                    ],
+                },
+            )
+            assert r2.status_code == 200
+            assert r2.json()["episode_id"] == ep_id
+            assert r2.json()["accepted"] == 1
+
+            # 第 3 片：仅单条记录携带 external_episode_id 续传
+            r3 = await client.post(
+                "/api/v1/archive/ingest",
+                json={
+                    "branch_id": "amaidesu",
+                    "records": [
+                        {
+                            "idempotency_key": "chunk-rec-3",
+                            "record_type": "game_event",
+                            "occurred_at_ms": _ms(2026, 11, 25, 22, 5),
+                            "title": "minecraft:milestone",
+                            "content": "测试分片独有词条琥珀灯塔点亮完成",
+                            "external_episode_id": "ep-chunk-99",
+                        }
+                    ],
+                },
+            )
+            assert r3.status_code == 200
+            assert r3.json()["accepted"] == 1
+
+            # 召回第 2 片原话必须带上场次标题锚点（证明 episode_id 已正确绑定）
+            rec = await client.get(
+                "/api/v1/views/recall",
+                params={"query": "青金石风车", "days": 0, "limit": 3, "target_visibility": "group"},
+            )
+            assert rec.status_code == 200
+            assert "分片测试场·动力锯修桥" in rec.json()["text"]
+            assert "青金石风车" in rec.json()["text"]
+
+            # 校验看板 /status 返回三层统计、原件细分与最近入库场次条数
+            st = await client.get("/api/v1/dashboard/status")
+            assert st.status_code == 200
+            db_info = st.json()["db"]
+            assert db_info["counts"]["episodes"] == 1
+            assert db_info["counts"]["episode_records"] == 3
+            assert db_info["record_type_counts"]["speech"] == 1
+            assert db_info["record_type_counts"]["game_event"] == 1
+            assert db_info["recent_episodes"][0]["external_episode_id"] == "ep-chunk-99"
+            assert db_info["recent_episodes"][0]["record_count"] == 3

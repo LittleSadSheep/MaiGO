@@ -225,12 +225,44 @@ class MaintenanceService:
                 "knowledge_relations": int(conn.execute("SELECT COUNT(*) FROM knowledge_relations").fetchone()[0]),
                 "embeddings": self._embeddings.count_all(conn),
             }
+            # 统计原件书库各类型细分与最近入库场次，供看板实时观察三层记忆规模与回填推进位置
+            record_type_counts = {
+                str(r[0]): int(r[1])
+                for r in conn.execute(
+                    "SELECT record_type, COUNT(*) AS cnt FROM episode_records GROUP BY record_type ORDER BY cnt DESC"
+                ).fetchall()
+            }
+            recent_ep_rows = conn.execute(
+                """
+                SELECT e.id, e.branch_id, e.external_episode_id, e.kind, e.title,
+                       e.started_at_ms, e.ended_at_ms,
+                       (SELECT COUNT(*) FROM episode_records r WHERE r.episode_id = e.id) AS record_count
+                FROM episodes e
+                ORDER BY e.started_at_ms DESC, e.id DESC
+                LIMIT 6
+                """
+            ).fetchall()
+            recent_episodes = [
+                {
+                    "id": int(r["id"]),
+                    "branch_id": str(r["branch_id"]),
+                    "external_episode_id": str(r["external_episode_id"]),
+                    "kind": str(r["kind"]),
+                    "title": str(r["title"] or ""),
+                    "started_at_ms": int(r["started_at_ms"]),
+                    "ended_at_ms": int(r["ended_at_ms"]) if r["ended_at_ms"] is not None else None,
+                    "record_count": int(r["record_count"] or 0),
+                }
+                for r in recent_ep_rows
+            ]
             return {
                 "integrity": integrity,
                 "journal_mode": wal_mode,
                 "schema_version": schema_ver,
                 "missing_tables": missing,
                 "counts": counts,
+                "record_type_counts": record_type_counts,
+                "recent_episodes": recent_episodes,
             }
 
         db_info = await self._db.run(_inspect)

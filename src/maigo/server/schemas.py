@@ -248,6 +248,7 @@ class EpisodeRecordIn(BaseModel):
     title: str = Field(default="", max_length=256)
     content: str = Field(..., min_length=1, max_length=6000)
     verbatim: str = Field(default="", max_length=4000)
+    external_episode_id: Optional[str] = Field(default=None, max_length=128)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -258,6 +259,7 @@ class ArchiveIngestIn(BaseModel):
 
     branch_id: str = Field(..., min_length=1, max_length=64)
     episode: Optional[EpisodeIn] = None
+    external_episode_id: Optional[str] = Field(default=None, max_length=128)
     records: List[EpisodeRecordIn] = Field(default_factory=list)
 
 

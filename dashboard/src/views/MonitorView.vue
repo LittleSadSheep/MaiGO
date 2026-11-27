@@ -18,6 +18,73 @@
       </div>
     </div>
 
+    <!-- 三层记忆库规模与回填监控 -->
+    <div class="card stack">
+      <div class="card-header">
+        <div>
+          <h3>三层记忆库规模与回填监控</h3>
+          <div v-if="lastStatusAt" class="muted">
+            最近刷新：{{ formatMs(lastStatusAt) }} · Schema v{{ dbStatus?.db?.schema_version ?? "?" }}
+          </div>
+        </div>
+        <div class="row">
+          <label class="muted row" style="cursor: pointer">
+            <input v-model="autoRefresh" type="checkbox" />
+            <span>每 5 秒自动刷新</span>
+          </label>
+          <button class="ghost" @click="loadMemoryStatus">刷新统计</button>
+        </div>
+      </div>
+
+      <div v-if="dbStatus?.db?.counts" class="row" style="align-items: stretch">
+        <div class="item-box" style="flex: 1 1 200px">
+          <div class="muted">L1 主线与编年</div>
+          <strong>事件 {{ dbStatus.db.counts.events }} · 编年 {{ dbStatus.db.counts.chronicles }}</strong>
+          <div class="muted">
+            待整理 {{ dbStatus.db.counts.unsynthesized_events }} · 主线 {{ dbStatus.db.counts.arcs }} · 锚点
+            {{ dbStatus.db.counts.anchors }} · 话头 {{ dbStatus.db.counts.topics }}
+          </div>
+        </div>
+        <div class="item-box" style="flex: 1 1 220px">
+          <div class="muted">L0 原件书库</div>
+          <strong>场次 {{ dbStatus.db.counts.episodes }} · 原件 {{ dbStatus.db.counts.episode_records }}</strong>
+          <div class="row" style="margin-top: 4px; gap: 4px">
+            <span v-for="(cnt, rtype) in dbStatus.db.record_type_counts || {}" :key="rtype" class="badge">
+              {{ recordTypeLabel(String(rtype)) }} {{ cnt }}
+            </span>
+          </div>
+        </div>
+        <div class="item-box" style="flex: 1 1 180px">
+          <div class="muted">L2 实体关系图谱</div>
+          <strong>实体 {{ dbStatus.db.counts.knowledge_entities }} · 关系 {{ dbStatus.db.counts.knowledge_relations }}</strong>
+          <div class="muted">已登记跨端人物 {{ dbStatus.db.counts.persons }}</div>
+        </div>
+        <div class="item-box" style="flex: 1 1 160px">
+          <div class="muted">语义向量索引</div>
+          <strong>向量 {{ dbStatus.db.counts.embeddings }}</strong>
+          <div class="muted">
+            {{ dbStatus.retrieval_mode === "hybrid" ? "混合语义召回" : "稀疏全文召回" }} ·
+            {{ dbStatus.synthesizer_mode === "llm" ? "LLM 整理" : "规则整理" }}
+          </div>
+        </div>
+      </div>
+
+      <div v-if="dbStatus?.db?.recent_episodes?.length" class="stack" style="gap: 6px">
+        <div class="muted">最近入库场次（按开播时间倒序，便于核对回填推进到的日期）</div>
+        <div class="row">
+          <div v-for="ep in dbStatus.db.recent_episodes" :key="ep.id" class="item-box" style="flex: 1 1 240px">
+            <div class="row" style="justify-content: space-between">
+              <strong>{{ ep.title || `场次 #${ep.external_episode_id}` }}</strong>
+              <span class="badge info">{{ ep.record_count }} 条原件</span>
+            </div>
+            <div class="muted">
+              {{ ep.branch_id }} · #{{ ep.external_episode_id }} · {{ formatMs(ep.started_at_ms) }}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="grid-2">
       <!-- 左：事件调试工具 -->
       <div class="card stack">
@@ -101,7 +168,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { apiRequest, formatMs } from "../api/client";
 
 interface BranchItem {
@@ -109,6 +176,41 @@ interface BranchItem {
   mode: string;
   status: string;
   last_seen_ms: number;
+}
+
+interface RecentEpisodeItem {
+  id: number;
+  branch_id: string;
+  external_episode_id: string;
+  kind: string;
+  title: string;
+  started_at_ms: number;
+  ended_at_ms: number | null;
+  record_count: number;
+}
+
+interface MemoryStatusOut {
+  synthesizer_mode: string;
+  retrieval_mode: string;
+  db?: {
+    schema_version?: number;
+    counts?: {
+      events: number;
+      unsynthesized_events: number;
+      chronicles: number;
+      arcs: number;
+      anchors: number;
+      topics: number;
+      persons: number;
+      episodes: number;
+      episode_records: number;
+      knowledge_entities: number;
+      knowledge_relations: number;
+      embeddings: number;
+    };
+    record_type_counts?: Record<string, number>;
+    recent_episodes?: RecentEpisodeItem[];
+  };
 }
 
 interface PreviewOut {
@@ -119,9 +221,27 @@ interface PreviewOut {
 }
 
 const branches = ref<BranchItem[]>([]);
+const dbStatus = ref<MemoryStatusOut | null>(null);
+const lastStatusAt = ref<number>(0);
+const autoRefresh = ref<boolean>(false);
+let refreshTimer: number | null = null;
 const err = ref("");
 const simResult = ref("");
 const preview = ref<PreviewOut | null>(null);
+
+const RECORD_TYPE_LABELS: Record<string, string> = {
+  game_event: "游戏记录",
+  speech: "原话",
+  timeline_chunk: "时段分段",
+  archive_line: "场次档案",
+  work_doc: "世界笔记",
+  creature: "同伴名册",
+  interaction_fact: "互动事实",
+};
+
+function recordTypeLabel(rtype: string): string {
+  return RECORD_TYPE_LABELS[rtype] || rtype;
+}
 
 const simForm = reactive({
   branch_id: "bilibili_ops",
@@ -215,7 +335,37 @@ async function previewView() {
   }
 }
 
+async function loadMemoryStatus() {
+  try {
+    dbStatus.value = await apiRequest<MemoryStatusOut>("/api/v1/dashboard/status");
+    lastStatusAt.value = Date.now();
+  } catch (e) {
+    err.value = (e as Error).message;
+  }
+}
+
+watch(autoRefresh, (enabled) => {
+  if (refreshTimer !== null) {
+    window.clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+  if (enabled) {
+    // 开启自动刷新时立即拉一次最新统计，随后每 5 秒同步分支与三层计数
+    void Promise.all([loadBranches(), loadMemoryStatus()]);
+    refreshTimer = window.setInterval(() => {
+      void Promise.all([loadBranches(), loadMemoryStatus()]);
+    }, 5000);
+  }
+});
+
 onMounted(async () => {
-  await Promise.all([loadBranches(), previewView()]);
+  await Promise.all([loadBranches(), loadMemoryStatus(), previewView()]);
+});
+
+onUnmounted(() => {
+  if (refreshTimer !== null) {
+    window.clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
 });
 </script>

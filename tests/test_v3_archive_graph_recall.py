@@ -17,6 +17,7 @@ from maigo.core.models import ExperienceEventRow
 from maigo.server import create_app
 from maigo.storage import SCHEMA_VERSION, MaiGODatabase, NewExperienceEvent
 from maigo.storage.repos import DailyChronicleRepo, ExperienceEventRepo
+from maigo.storage.repos._text import extract_query_terms
 
 
 def _ms(year: int, month: int, day: int, hour: int, minute: int = 0) -> int:
@@ -546,3 +547,80 @@ async def test_archive_chunked_ingest_binds_episode_and_status_reports_progress(
             assert db_info["record_type_counts"]["game_event"] == 1
             assert db_info["recent_episodes"][0]["external_episode_id"] == "ep-chunk-99"
             assert db_info["recent_episodes"][0]["record_count"] == 3
+
+
+async def test_colloquial_query_term_extraction_and_record_type_priority(tmp_path: Path) -> None:
+    """自然口语问句剥离外壳词后不挤掉核心实体，且高信噪比名册/档案优先于碎日志与闲聊。"""
+    assert "女仆" in extract_query_terms("@麦麦 麦麦你记不记得我有几只女仆")
+    assert "麦麦你" not in extract_query_terms("@麦麦 麦麦你记不记得我有几只女仆")
+    house_terms = extract_query_terms("那麦麦你知道你的房子是几号建起来的吗")
+    assert "房子" in house_terms
+    assert "那麦麦" not in house_terms
+    dinner_terms = extract_query_terms("今天晚饭吃啥呀")
+    assert "今天" not in dinner_terms
+    assert any("晚饭" in tok for tok in dinner_terms)
+
+    clock = _MutableClock(_ms(2026, 11, 27, 13, 0))
+    cfg = MaiGOConfig(
+        db_path=str(tmp_path / "prio.sqlite3"),
+        auth_token="",
+        dashboard_dist_dir=str(tmp_path / "no_dist"),
+        synthesizer=SynthesizerConfig(auto_background=False),
+        backup=BackupConfig(dir=str(tmp_path / "backups")),
+    )
+    app = create_app(cfg, clock_ms=clock)
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post(
+                "/api/v1/archive/ingest",
+                json={
+                    "branch_id": "amaidesu",
+                    "episode": {
+                        "external_episode_id": "ep-maid-1",
+                        "kind": "live",
+                        "title": "营地女仆与建家日常",
+                        "platform": "bilibili",
+                        "started_at_ms": _ms(2026, 11, 16, 20, 47),
+                        "ended_at_ms": _ms(2026, 11, 16, 23, 0),
+                    },
+                    "records": [
+                        {
+                            "idempotency_key": "m-speech-noise",
+                            "record_type": "speech",
+                            "occurred_at_ms": _ms(2026, 11, 21, 9, 0),
+                            "title": "主播原话",
+                            "content": "麦麦你怎么又变猫娘了，今天有没有人要吃我的铁块",
+                        },
+                        {
+                            "idempotency_key": "m-archive-maid",
+                            "record_type": "archive_line",
+                            "occurred_at_ms": _ms(2026, 11, 16, 21, 20),
+                            "title": "Minecraft：女仆酒尾狐、迷你酒狐、纸板狐",
+                            "content": "那边几只女仆叫酒尾狐、迷你酒狐、纸板狐，听这名儿跟一家子似的",
+                        },
+                        {
+                            "idempotency_key": "m-creature-maid",
+                            "record_type": "creature",
+                            "occurred_at_ms": _ms(2026, 11, 20, 22, 0),
+                            "title": "同伴名册：小百合",
+                            "content": "小百合（种类：女仆，状态：存活同伴）",
+                        },
+                    ],
+                },
+            )
+            r_maid = await client.get(
+                "/api/v1/views/recall",
+                params={"query": "@麦麦 麦麦你记不记得我有几只女仆", "days": 0, "limit": 3, "high_confidence_only": "true"},
+            )
+            assert r_maid.status_code == 200
+            txt = r_maid.json()["text"]
+            assert "纸板狐" in txt or "小百合" in txt
+            assert "猫娘" not in txt
+
+            r_noise = await client.get(
+                "/api/v1/views/recall",
+                params={"query": "今天晚饭吃啥呀", "days": 0, "limit": 3, "high_confidence_only": "true"},
+            )
+            assert r_noise.status_code == 200
+            assert r_noise.json()["text"] == ""

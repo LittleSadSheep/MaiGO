@@ -10,14 +10,20 @@
 from __future__ import annotations
 
 from array import array
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import math
 import sqlite3
-from typing import Dict, List, Optional, Protocol, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
 import httpx
+
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - 未安装可选 numpy 时自动退回纯 Python 预归一化路径
+    np = None  # type: ignore[assignment]
 
 from maigo.config import EmbeddingConfig
 from maigo.core.digest_rules import is_hollow_interaction
@@ -69,6 +75,41 @@ _RECORD_TYPE_LABELS: Dict[str, str] = {
     "archive_line": "场次档案",
     "interaction_fact": "互动细节",
 }
+
+# 按证据信息密度分层加权，让高信噪比笔记/名册/场次档案优先于高频碎事件与碎原话浮出
+_RECORD_TYPE_WEIGHTS: Dict[str, float] = {
+    "work_doc": 1.45,
+    "creature": 1.45,
+    "archive_line": 1.38,
+    "timeline_chunk": 1.22,
+    "interaction_fact": 1.15,
+    "game_event": 1.05,
+    "speech": 0.95,
+}
+_NOISY_GAME_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "place_near",
+        "place_left",
+        "attention_required",
+        "delegation_accepted",
+        "delegation_queued",
+        "delegation_cancelled",
+    }
+)
+_QUERY_VEC_CACHE_MAX = 256
+_QUERY_VEC_CACHE_TTL_MS = 10 * 60 * 1000
+
+
+@dataclass
+class _ModelVectorIndex:
+    """进程内单模型全量归一化向量缓存，避免每次查询重扫 SQLite BLOB 并消除 4000 条截断。"""
+
+    count: int
+    max_updated_at_ms: int
+    dims: int
+    keys: List[Tuple[str, int]]
+    np_matrix: Any = None
+    py_vectors: Optional[List[List[float]]] = None
 
 
 class EmbeddingClient(Protocol):
@@ -234,6 +275,87 @@ class HybridRecallService:
         else:
             self._client = None
 
+        self._vector_cache: Dict[str, _ModelVectorIndex] = {}
+        self._query_vec_cache: OrderedDict[Tuple[str, str], Tuple[int, List[float]]] = OrderedDict()
+
+    def _get_or_build_vector_index(self, conn: sqlite3.Connection, model_name: str) -> Optional[_ModelVectorIndex]:
+        """校验向量表统计指纹，未变化时直接复用内存归一化矩阵，有新写入时全量刷新缓存。"""
+        cnt, max_ts = self._embeddings.get_model_stats(conn, model=model_name)
+        if cnt <= 0:
+            self._vector_cache.pop(model_name, None)
+            return None
+        cached = self._vector_cache.get(model_name)
+        if cached is not None and cached.count == cnt and cached.max_updated_at_ms == max_ts:
+            return cached
+
+        rows = self._embeddings.list_by_model(conn, model=model_name, limit=None)
+        if not rows:
+            self._vector_cache.pop(model_name, None)
+            return None
+
+        # 过滤异常维度行（以主维度为准），并预先 L2 归一化，后续查询只需纯点积
+        dims = rows[0].dims
+        valid_keys: List[Tuple[str, int]] = []
+        valid_blobs: List[bytes] = []
+        expected_bytes = dims * 4
+        for erow in rows:
+            if erow.dims == dims and len(erow.vector_blob) == expected_bytes:
+                valid_keys.append((erow.item_type, erow.item_id))
+                valid_blobs.append(erow.vector_blob)
+        if not valid_keys:
+            return None
+
+        if np is not None:
+            raw_buf = b"".join(valid_blobs)
+            mat = np.frombuffer(raw_buf, dtype="<f4").reshape(len(valid_keys), dims).astype(np.float32, copy=True)
+            norms = np.linalg.norm(mat, axis=1, keepdims=True)
+            norms[norms < 1e-12] = 1.0
+            mat /= norms
+            index = _ModelVectorIndex(
+                count=cnt,
+                max_updated_at_ms=max_ts,
+                dims=dims,
+                keys=valid_keys,
+                np_matrix=mat,
+            )
+        else:
+            py_vecs: List[List[float]] = []
+            for blob in valid_blobs:
+                vec = _unpack_vector(blob)
+                norm = math.sqrt(sum(v * v for v in vec))
+                py_vecs.append([v / norm for v in vec] if norm > 1e-12 else vec)
+            index = _ModelVectorIndex(
+                count=cnt,
+                max_updated_at_ms=max_ts,
+                dims=dims,
+                keys=valid_keys,
+                py_vectors=py_vecs,
+            )
+
+        self._vector_cache[model_name] = index
+        return index
+
+    async def _embed_query_cached(self, query_clean: str, now_ms_val: int) -> Optional[List[float]]:
+        """对查询句的语义向量做短时 LRU 缓存，避免相同/重复追问反复等待远端 Embedding RTT。"""
+        if self._client is None or not query_clean:
+            return None
+        cache_key = (self._client.model_name, query_clean)
+        cached = self._query_vec_cache.get(cache_key)
+        if cached is not None:
+            ts_ms, vec = cached
+            if now_ms_val - ts_ms <= _QUERY_VEC_CACHE_TTL_MS:
+                self._query_vec_cache.move_to_end(cache_key)
+                return vec
+            self._query_vec_cache.pop(cache_key, None)
+
+        vecs = await self._client.embed_texts([query_clean])
+        if not vecs or not vecs[0]:
+            return None
+        self._query_vec_cache[cache_key] = (now_ms_val, vecs[0])
+        while len(self._query_vec_cache) > _QUERY_VEC_CACHE_MAX:
+            self._query_vec_cache.popitem(last=False)
+        return vecs[0]
+
     @property
     def mode(self) -> str:
         """返回当前检索模式（hybrid=稀疏+向量融合 / sparse=纯单机稀疏）。"""
@@ -365,9 +487,9 @@ class HybridRecallService:
                 return ep_cache[eid]
 
             rank = 0
-            # 1. L0 原件书库（优先呈现最细颗粒度一手证据）
+            # 1. L0 原件书库（适当扩大稀疏候选池，确保高信噪比档案/名册不被大量碎日志挤出初筛）
             for rec in self._episodes.search_records(
-                conn, query=query, since_ms=since_ms, visibilities=vis_allowed, limit=cap * 2
+                conn, query=query, since_ms=since_ms, visibilities=vis_allowed, limit=max(cap * 4, 16)
             ):
                 if high_confidence_only and _is_same_branch_speech(rec.branch_id, rec.record_type):
                     continue
@@ -423,30 +545,51 @@ class HybridRecallService:
 
         all_ext_ids, candidates = await self._db.run(_sparse_collect)
 
-        # 语义向量召回分支（配置模型且成功向量化时启用，失败静默降级纯稀疏）
-        query_vec: Optional[List[float]] = None
-        if self._client is not None and query.strip():
-            vecs = await self._client.embed_texts([query.strip()])
-            if vecs and vecs[0]:
-                query_vec = vecs[0]
+        # 语义向量召回分支（配置模型且成功向量化时启用，命中缓存秒回，失败静默降级纯稀疏）
+        query_vec: Optional[List[float]] = await self._embed_query_cached(query.strip(), now)
 
         cos_floor = _HIGH_CONF_COSINE_SCORE if high_confidence_only else _MIN_COSINE_SCORE
         if query_vec is not None and self._client is not None:
             model_name = self._client.model_name
+            q_norm_val = math.sqrt(sum(v * v for v in query_vec))
+            q_unit = [v / q_norm_val for v in query_vec] if q_norm_val > 1e-12 else []
 
             def _dense_collect(
                 conn: sqlite3.Connection,
             ) -> List[Tuple[float, Tuple[str, int], Optional[_CandidateItem]]]:
-                emb_rows = self._embeddings.list_by_model(conn, model=model_name, limit=4000)
+                if not q_unit:
+                    return []
+                vec_index = self._get_or_build_vector_index(conn, model_name)
+                if vec_index is None or vec_index.dims != len(q_unit):
+                    return []
+
+                top_k = max(cap * 6, 24)
                 scored: List[Tuple[float, Tuple[str, int]]] = []
-                for erow in emb_rows:
-                    sim = _cosine_similarity(query_vec, _unpack_vector(erow.vector_blob))
-                    if sim >= cos_floor:
-                        scored.append((sim, (erow.item_type, erow.item_id)))
-                scored.sort(key=lambda item: item[0], reverse=True)
+                if np is not None and vec_index.np_matrix is not None:
+                    # 矩阵点积一次扫描全量万级向量（毫秒级），绝不遗漏较早历史原件
+                    q_arr = np.asarray(q_unit, dtype=np.float32)
+                    sims = vec_index.np_matrix @ q_arr
+                    hit_indices = np.flatnonzero(sims >= cos_floor)
+                    if hit_indices.size > 0:
+                        hit_sims = sims[hit_indices]
+                        if hit_indices.size > top_k:
+                            part = np.argpartition(hit_sims, -top_k)[-top_k:]
+                            hit_indices = hit_indices[part]
+                            hit_sims = hit_sims[part]
+                        order = np.argsort(hit_sims)[::-1]
+                        for pos in order:
+                            idx = int(hit_indices[int(pos)])
+                            scored.append((float(hit_sims[int(pos)]), vec_index.keys[idx]))
+                elif vec_index.py_vectors is not None:
+                    for idx, vec in enumerate(vec_index.py_vectors):
+                        sim = sum(x * y for x, y in zip(q_unit, vec, strict=True))
+                        if sim >= cos_floor:
+                            scored.append((sim, vec_index.keys[idx]))
+                    scored.sort(key=lambda item: item[0], reverse=True)
+                    scored = scored[:top_k]
 
                 resolved: List[Tuple[float, Tuple[str, int], Optional[_CandidateItem]]] = []
-                for sim, (itype, iid) in scored[: cap * 4]:
+                for sim, (itype, iid) in scored:
                     key = (itype, iid)
                     if key in candidates:
                         resolved.append((sim, key, None))
@@ -623,12 +766,20 @@ class HybridRecallService:
         head = f"{clean_title}：{clean_body}" if (clean_title and clean_title not in clean_body) else (clean_body or clean_title)
         quote = f" 原话：「{sanitize_for_model(rec.verbatim, all_ext_ids)[:240]}」" if rec.verbatim and rec.verbatim != rec.content else ""
         raw = f"{rec.title} {rec.content} {rec.verbatim}"
+        # 按原件类型区分信噪比权重，低价值位置移动与派单受理日志降权，让笔记/名册/场次档案浮到最前
+        weight = _RECORD_TYPE_WEIGHTS.get(rec.record_type, 1.0)
+        if rec.record_type == "game_event":
+            ev_type = str(rec.metadata.get("event_type") or "").strip().lower()
+            if not ev_type and ":" in rec.title:
+                ev_type = rec.title.split(":", 1)[1].strip().lower()
+            if ev_type in _NOISY_GAME_EVENT_TYPES:
+                weight = 0.75
         return _CandidateItem(
             key=("record", rec.id),
             text=f"{prefix} {head}{quote}",
             raw_text=clean_body or clean_title,
             occurred_at_ms=rec.occurred_at_ms,
-            weight=1.25,
+            weight=weight,
             sparse_rank=sparse_rank,
             term_hits=count_term_hits(raw, terms),
         )
@@ -676,7 +827,7 @@ class HybridRecallService:
             text=f"{prefix} {body}",
             raw_text=clean_fact,
             occurred_at_ms=rel.occurred_at_ms,
-            weight=1.2,
+            weight=1.35,
             sparse_rank=sparse_rank,
             term_hits=count_term_hits(raw, terms),
         )

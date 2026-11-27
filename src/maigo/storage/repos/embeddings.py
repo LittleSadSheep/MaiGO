@@ -71,12 +71,31 @@ class EmbeddingRepo:
         )
         conn.commit()
 
-    def list_by_model(self, conn: sqlite3.Connection, *, model: str, limit: int = 2000) -> List[EmbeddingRow]:
-        """按模型列出最近写入的向量（供单机混合检索做内存余弦排序）。"""
-        rows = conn.execute(
-            "SELECT * FROM memory_embeddings WHERE model = ? ORDER BY updated_at_ms DESC LIMIT ?",
-            (model, max(1, int(limit))),
-        ).fetchall()
+    def get_model_stats(self, conn: sqlite3.Connection, *, model: str) -> tuple[int, int]:
+        """返回指定模型当前向量条数与最新更新时间，供内存向量缓存低开销校验失效。"""
+        row = conn.execute(
+            "SELECT COUNT(*) AS cnt, COALESCE(MAX(updated_at_ms), 0) AS max_ts "
+            "FROM memory_embeddings WHERE model = ?",
+            (model,),
+        ).fetchone()
+        if row is None:
+            return 0, 0
+        return int(row["cnt"] or 0), int(row["max_ts"] or 0)
+
+    def list_by_model(
+        self, conn: sqlite3.Connection, *, model: str, limit: Optional[int] = None
+    ) -> List[EmbeddingRow]:
+        """按模型列出向量（``limit=None`` 表示全量加载，避免截断历史原件向量）。"""
+        if limit is None:
+            rows = conn.execute(
+                "SELECT * FROM memory_embeddings WHERE model = ? ORDER BY updated_at_ms DESC",
+                (model,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM memory_embeddings WHERE model = ? ORDER BY updated_at_ms DESC LIMIT ?",
+                (model, max(1, int(limit))),
+            ).fetchall()
         return [_row_to_embedding(row) for row in rows]
 
     def delete_for_item(self, conn: sqlite3.Connection, *, item_type: str, item_id: int) -> int:

@@ -10,11 +10,18 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
-from maigo.core.digest_rules import SLOT_LABELS, compute_day_and_slot, is_hollow_interaction, slot_rank
+from maigo.core.digest_rules import (
+    SLOT_LABELS,
+    compute_day_and_slot,
+    humanize_arc_title,
+    is_hollow_interaction,
+    slot_rank,
+)
 from maigo.core.identity import ActorCardProjection, IdentityService, PersonDirectoryEntry
 from maigo.core.models import CheckoutSessionRow, DailyChronicleRow, EpisodeRow, LifeArcRow, PersonaAnchorRow
 from maigo.core.privacy import (
@@ -89,6 +96,24 @@ class ContextProjection:
     active_sessions: List[CheckoutSessionRow]
     save_brief: str = ""
     person_directory: List[PersonDirectoryEntry] = field(default_factory=list)
+
+
+_THIRD_PERSON_LEAD_RE = re.compile(r"^(?:这|本)场直播中?[，,、\s]*主播")
+_THIRD_PERSON_HOST_RE = re.compile(r"(?:这|本)场直播(?:里|中)?的主播")
+_THIRD_PERSON_PRONOUN_RE = re.compile(r"(?<![其另])她")
+
+
+def _to_first_person_recap(text: str) -> str:
+    """将结场客观第三人称直播概览改写为第一人称自述，避免群聊模型把“主播/她”误认成他人。"""
+    clean = str(text or "").strip()
+    if not clean:
+        return ""
+    # 先替换句首“这场直播中，主播”与“这场直播的主播”，再收敛其余“主播”和第三人称“她”
+    clean = _THIRD_PERSON_LEAD_RE.sub("刚才直播里我", clean)
+    clean = _THIRD_PERSON_HOST_RE.sub("刚才直播里的我", clean)
+    clean = clean.replace("主播", "我")
+    clean = _THIRD_PERSON_PRONOUN_RE.sub("我", clean)
+    return clean.replace("我我", "我")
 
 
 def _branch_label(branch_id: str) -> str:
@@ -355,8 +380,12 @@ class ViewProjector:
             arc_lines: List[str] = []
             for arc in arcs:
                 raw_sum = (arc.public_summary or arc.summary) if target_visibility == "public" else arc.summary
-                clean_title = sanitize_for_model(arc.title, known_external_ids)
                 clean_sum = sanitize_for_model(raw_sum, known_external_ids)
+                clean_title = humanize_arc_title(
+                    sanitize_for_model(arc.title, known_external_ids),
+                    save_id=arc.save_id,
+                    summary=clean_sum,
+                )
                 mood = f"（状态：{arc.mood_hint}）" if arc.mood_hint else ""
                 arc_lines.append(f"- {clean_title}{mood}：{clean_sum}")
             sections.append("【近期一直在忙的主线】\n" + "\n".join(arc_lines))
@@ -421,9 +450,10 @@ class ViewProjector:
             for sess, ep in just_ended:
                 plat = sess.platform or "直播平台"
                 title_part = f"《{sanitize_for_model(sess.title, known_external_ids)}》" if sess.title else ""
-                ov_text = sanitize_for_model(ep.overview, known_external_ids)[:240] if (ep and ep.overview) else ""
-                ov_part = f"本场概览：{ov_text}" if ov_text else ""
-                parts.append(f"你刚刚结束了{plat}直播{title_part}。{ov_part}".strip())
+                raw_ov = sanitize_for_model(ep.overview, known_external_ids) if (ep and ep.overview) else ""
+                ov_text = _to_first_person_recap(raw_ov)[:240]
+                ov_part = f"刚才直播回顾：{ov_text}" if ov_text else ""
+                parts.append(f"你刚刚结束了{plat}直播{title_part}（你是这场直播的主播）。{ov_part}".strip())
 
         open_lines: List[str] = []
         for row in open_rows:

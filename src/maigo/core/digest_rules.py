@@ -34,6 +34,36 @@ _MOOD_RULES: Tuple[Tuple[Tuple[str, ...], str], ...] = (
     (("热闹", "讨论", "聊到", "约定", "直播"), "兴致不错"),
 )
 _HOLLOW_INTERACTION_RE = re.compile(r"发生游戏互动（(?:greet|gift|spar|helped|together|interaction)）")
+_HASH_SAVE_TITLE_RE = re.compile(r"^(?:存档\s*)?[0-9a-fA-F]{12,}(?:\s*近况)?$")
+_HEX_HASH_RE = re.compile(r"[0-9a-fA-F]{16,}")
+
+
+def humanize_arc_title(
+    title: str,
+    *,
+    save_id: Optional[str] = None,
+    summary: str = "",
+) -> str:
+    """将含长哈希 save_id 的技术性主线标题改写为自然的人类可读标题。
+
+    触发条件：规则提炼主线、LLM 输出主线或慢层简报渲染主线标题时调用；
+    处理顺序：若标题本身形如「存档 <十六进制哈希>」或夹带长哈希串，
+    按摘要关键词归类为可读名称，避免向模型暴露无意义的内部哈希 ID。
+    """
+    clean = str(title or "").strip()
+    sid = str(save_id or "").strip()
+    has_raw_hash = (
+        not clean
+        or bool(_HASH_SAVE_TITLE_RE.match(clean))
+        or bool(_HEX_HASH_RE.search(clean))
+        or (len(sid) >= 12 and sid in clean)
+    )
+    if not has_raw_hash:
+        return clean[:64]
+    low_sum = (summary or "").lower()
+    if "minecraft" in low_sum or "mc" in low_sum:
+        return "Minecraft 存档主线"
+    return "游戏存档主线"
 _KIND_PRIORITY = {
     "milestone": 0,
     "promise_update": 1,
@@ -197,7 +227,8 @@ class OpenAISynthesisClient:
             '"anchors": [{"anchor_type": "stance|promise", "content": "...", "source_event_id": 1, "status": "active|open|closed|void", "supersedes_id": null}], '
             '"topics": [{"title": "...", "summary": "...", "reaction": "...", "source_event_id": 1}], '
             '"arcs": [{"title": "...", "summary": "...", "public_summary": "...", "save_id": null, "mood_hint": "...", "source_event_id": 1}]}\n'
-            "硬约束：anchors 只能从 actor_role=self 的事件提取，严禁把 peer 的话当成自己的立场或承诺。\n"
+            "硬约束：anchors 只能从 actor_role=self 的事件提取，严禁把 peer 的话当成自己的立场或承诺；"
+            "arcs.title 必须使用简短自然的人类可读标题（如“Minecraft 营地建设”），严禁把 save_id 哈希串写进标题。\n"
             "事件列表：\n" + "\n".join(lines)
         )
         headers = {"Content-Type": "application/json"}
@@ -239,7 +270,11 @@ class OpenAISynthesisClient:
             ]
             arcs = [
                 ArcCandidate(
-                    title=str(ar.get("title", "")).strip(),
+                    title=humanize_arc_title(
+                        str(ar.get("title", "")).strip(),
+                        save_id=str(ar["save_id"]) if ar.get("save_id") else None,
+                        summary=str(ar.get("summary", "")).strip(),
+                    ),
                     summary=str(ar.get("summary", "")).strip(),
                     public_summary=str(ar.get("public_summary", "")).strip(),
                     save_id=str(ar["save_id"]) if ar.get("save_id") else None,
@@ -313,11 +348,17 @@ def _extract_rule_arcs(
     if ev.visibility == "private":
         return
     explicit_title = str(ev.metadata.get("arc_title") or "").strip()
+    readable_save = str(ev.metadata.get("save_name") or ev.metadata.get("world_name") or "").strip()
     is_highlight_save = bool(ev.save_id and ev.kind == "milestone" and ev.metadata.get("highlight"))
     if not explicit_title and not is_highlight_save:
         return
-    title = sanitize_for_model(explicit_title or f"存档 {ev.save_id} 近况", known_external_ids)[:60]
     clean_sum = sanitize_for_model(ev.summary, known_external_ids)[:200]
+    raw_title = explicit_title or (f"{readable_save} 近况" if readable_save else f"存档 {ev.save_id} 近况")
+    title = humanize_arc_title(
+        sanitize_for_model(raw_title, known_external_ids),
+        save_id=ev.save_id,
+        summary=clean_sum,
+    )[:60]
     out.append(
         ArcCandidate(
             title=title,

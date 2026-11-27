@@ -523,3 +523,79 @@ async def test_v2_life_arcs_mood_wake_hint_stance_evolution_and_stale_promises(t
     )
     assert ctx_same_slot.stable_unchanged is True and ctx_same_slot.brief_etag == ctx_afternoon.brief_etag
     await db.close()
+
+
+async def test_humanize_hash_arc_title_and_first_person_live_recap(tmp_path) -> None:
+    """验证长哈希存档主线标题自动可读化，且刚下播直播概览转为第一人称自述。"""
+    from maigo.storage.repos import EpisodeRepo, LifeArcRepo, SessionRepo
+
+    clock = MutableClock(_ms(2026, 11, 27, 23, 30))
+    db = MaiGODatabase(tmp_path / "recap.sqlite3", clock_ms=clock)
+    await db.initialize()
+    identity = IdentityService(db, clock_ms=clock)
+    projector = ViewProjector(db, identity=identity, clock_ms=clock)
+    arc_repo = LifeArcRepo(clock_ms=clock)
+    sess_repo = SessionRepo(clock_ms=clock)
+    ep_repo = EpisodeRepo(clock_ms=clock)
+
+    raw_hash = "aa11bb22cc33dd44ee55ff6677889900aabbccdd11223344556677889900aabb"
+
+    def _seed(conn: sqlite3.Connection) -> None:
+        # 模拟旧库里带长哈希的存档主线标题
+        arc_repo.upsert_or_create(
+            conn,
+            title=f"存档 {raw_hash[:56]}",
+            summary="Minecraft：海边小屋建成，红石灯阵点亮",
+            public_summary="Minecraft：海边小屋建成，红石灯阵点亮",
+            status="active",
+            visibility="public",
+            save_id=raw_hash,
+            mood_hint="有成就感",
+        )
+        # 模拟 30 分钟前刚下播的一场直播，结场归档 overview 为第三人称客观叙述
+        sess_repo.create_checkout(
+            conn,
+            checkout_id="chk-ended-1",
+            branch_id="amaidesu",
+            external_session_id="ep-99",
+            kind="live",
+            title="晚间方块建设",
+            platform="bilibili",
+            room_id="9001",
+            segment_title="营地施工",
+            save_id=raw_hash,
+            visibility="public",
+        )
+        sess_repo.finish_checkout(conn, checkout_id="chk-ended-1")
+        ep_repo.upsert_episode(
+            conn,
+            branch_id="amaidesu",
+            external_episode_id="ep-99",
+            kind="live",
+            title="晚间方块建设",
+            platform="bilibili",
+            save_id=raw_hash,
+            visibility="public",
+            started_at_ms=clock() - 3 * 3600 * 1000,
+            ended_at_ms=clock() - 30 * 60 * 1000,
+            overview=(
+                "这场直播主播主要在海边整理木箱和红石线路，并与其他玩家聊了会儿天。"
+                "她去矿洞挖了铁矿，收尾时观众问她在忙什么并向她道晚安。"
+            ),
+        )
+
+    await db.run(_seed)
+    ctx = await projector.build_context(branch_id="maibot", target_visibility="group")
+    brief = ctx.stable_brief or ""
+    assert raw_hash[:16] not in brief
+    assert "Minecraft 存档主线" in brief
+    assert "海边小屋建成" in brief
+
+    live = ctx.live_context
+    assert "你刚刚结束了bilibili直播《晚间方块建设》（你是这场直播的主播）。" in live
+    assert "刚才直播回顾：刚才直播里我主要在海边整理木箱" in live
+    assert "其他玩家" in live
+    assert "我去矿洞挖了铁矿" in live
+    assert "观众问我在忙什么并向我道晚安" in live
+    assert "主播" not in live.split("刚才直播回顾：", 1)[1]
+    await db.close()

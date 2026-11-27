@@ -26,6 +26,7 @@ def _row_to_chronicle(row: sqlite3.Row) -> DailyChronicleRow:
         updated_at_ms=int(row["updated_at_ms"]),
         mood_tag=str(row["mood_tag"]) if "mood_tag" in keys else "",
         unfinished_thread=str(row["unfinished_thread"]) if "unfinished_thread" in keys else "",
+        draft_source=str(row["draft_source"]) if "draft_source" in keys else "llm",
     )
 
 
@@ -56,6 +57,7 @@ class DailyChronicleRepo:
         source_event_ids: Sequence[int],
         mood_tag: str = "",
         unfinished_thread: str = "",
+        draft_source: str = "llm",
     ) -> DailyChronicleRow:
         """写入或更新某时段纪要；若该时段已封存且本次未强制重开，保持封存时刻连续性。"""
         now = int(self._clock_ms())
@@ -65,13 +67,14 @@ class DailyChronicleRepo:
             sealed_at_ms = now
         elif status == "open":
             sealed_at_ms = None
+        clean_source = "rule" if draft_source == "rule" else "llm"
 
         conn.execute(
             """
             INSERT INTO daily_chronicles (
                 day_key, slot_key, status, body, public_body, group_body,
-                mood_tag, unfinished_thread, source_event_ids_json, sealed_at_ms, updated_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                mood_tag, unfinished_thread, draft_source, source_event_ids_json, sealed_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(day_key, slot_key) DO UPDATE SET
                 status = excluded.status,
                 body = excluded.body,
@@ -79,6 +82,7 @@ class DailyChronicleRepo:
                 group_body = excluded.group_body,
                 mood_tag = excluded.mood_tag,
                 unfinished_thread = excluded.unfinished_thread,
+                draft_source = excluded.draft_source,
                 source_event_ids_json = excluded.source_event_ids_json,
                 sealed_at_ms = COALESCE(daily_chronicles.sealed_at_ms, excluded.sealed_at_ms),
                 updated_at_ms = excluded.updated_at_ms
@@ -92,6 +96,7 @@ class DailyChronicleRepo:
                 group_body,
                 mood_tag.strip(),
                 unfinished_thread.strip(),
+                clean_source,
                 json.dumps([int(eid) for eid in source_event_ids]),
                 sealed_at_ms,
                 now,
@@ -147,3 +152,25 @@ class DailyChronicleRepo:
             (max(1, int(limit_days)),),
         ).fetchall()
         return [str(row["day_key"]) for row in rows]
+
+    def list_rule_fallback_slots(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        since_day_key: str,
+        limit: int = 2,
+    ) -> List[DailyChronicleRow]:
+        """列出近期因模型超时退回规则拼接的时段纪要，供后台空闲时用模型补写。"""
+        rows = conn.execute(
+            """
+            SELECT * FROM daily_chronicles
+            WHERE draft_source = 'rule'
+              AND slot_key != 'yesterday_carry'
+              AND day_key >= ?
+              AND source_event_ids_json != '[]'
+            ORDER BY day_key DESC, updated_at_ms DESC
+            LIMIT ?
+            """,
+            (since_day_key, max(1, int(limit))),
+        ).fetchall()
+        return [_row_to_chronicle(row) for row in rows]

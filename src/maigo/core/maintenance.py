@@ -219,6 +219,10 @@ class MaintenanceService:
                 "anchors": int(conn.execute("SELECT COUNT(*) FROM persona_anchors").fetchone()[0]),
                 "topics": int(conn.execute("SELECT COUNT(*) FROM topic_seeds").fetchone()[0]),
                 "persons": int(conn.execute("SELECT COUNT(*) FROM persons").fetchone()[0]),
+                "episodes": int(conn.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]),
+                "episode_records": int(conn.execute("SELECT COUNT(*) FROM episode_records").fetchone()[0]),
+                "knowledge_entities": int(conn.execute("SELECT COUNT(*) FROM knowledge_entities").fetchone()[0]),
+                "knowledge_relations": int(conn.execute("SELECT COUNT(*) FROM knowledge_relations").fetchone()[0]),
                 "embeddings": self._embeddings.count_all(conn),
             }
             return {

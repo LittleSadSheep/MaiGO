@@ -109,9 +109,65 @@ def _migrate_v2(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _rebuild_embeddings_v3(conn: sqlite3.Connection) -> None:
+    """无损重建 memory_embeddings，放宽 item_type 约束以容纳 L0 原件、场次与 L2 关系向量。"""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory_embeddings'"
+    ).fetchone()
+    ddl = str(row[0] or "") if row is not None else ""
+    if "'record'" in ddl and "'relation'" in ddl and "'episode'" in ddl:
+        return
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript(
+            """
+            DROP INDEX IF EXISTS idx_embeddings_type_model;
+            ALTER TABLE memory_embeddings RENAME TO _memory_embeddings_v2;
+
+            CREATE TABLE memory_embeddings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_type TEXT NOT NULL CHECK (item_type IN ('event', 'anchor', 'arc', 'episode', 'record', 'relation')),
+                item_id INTEGER NOT NULL,
+                model TEXT NOT NULL,
+                dims INTEGER NOT NULL,
+                vector_blob BLOB NOT NULL,
+                content_hash TEXT NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                UNIQUE (item_type, item_id, model)
+            );
+
+            INSERT INTO memory_embeddings (
+                id, item_type, item_id, model, dims, vector_blob, content_hash, updated_at_ms
+            )
+            SELECT id, item_type, item_id, model, dims, vector_blob, content_hash, updated_at_ms
+            FROM _memory_embeddings_v2;
+
+            DROP TABLE _memory_embeddings_v2;
+            CREATE INDEX IF NOT EXISTS idx_embeddings_type_model
+                ON memory_embeddings (item_type, model, updated_at_ms DESC);
+            """
+        )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_v3(conn: sqlite3.Connection) -> None:
+    """升级版本 3：补齐日内草稿来源列、扩展向量类型约束，并启用 L0 原件书库与 L2 实体关系索引。"""
+    chronicle_cols = _column_names(conn, "daily_chronicles")
+    if "draft_source" not in chronicle_cols:
+        conn.execute("ALTER TABLE daily_chronicles ADD COLUMN draft_source TEXT NOT NULL DEFAULT 'llm'")
+
+    _rebuild_embeddings_v3(conn)
+    conn.execute("INSERT INTO episode_records_fts(episode_records_fts) VALUES('rebuild')")
+    conn.execute("INSERT INTO episode_records_trigram(episode_records_trigram) VALUES('rebuild')")
+    conn.execute("INSERT INTO knowledge_relations_fts(knowledge_relations_fts) VALUES('rebuild')")
+    conn.commit()
+
+
 MIGRATIONS: List[Tuple[int, MigrationFn]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
+    (3, _migrate_v3),
 ]
 
 

@@ -11,7 +11,7 @@ from typing import List, Optional, Sequence
 from maigo.config import BackupConfig, EmbeddingConfig, MaiGOConfig, SynthesizerConfig, load_config
 from maigo.core import ChronicleSynthesizer, HybridRecallService, IdentityService, MaintenanceService
 from maigo.main import main as cli_main
-from maigo.storage import ActorRef, MaiGODatabase, NewExperienceEvent
+from maigo.storage import SCHEMA_VERSION, ActorRef, MaiGODatabase, NewExperienceEvent
 from maigo.storage.repos import DailyChronicleRepo, ExperienceEventRepo, LifeArcRepo, PersonaAnchorRepo, PersonRepo
 
 
@@ -219,7 +219,7 @@ async def test_backup_diary_export_and_cli_commands(tmp_path: Path, capsys) -> N
     # 3. doctor_report 输出完整巡检字段
     doc = await maint.doctor_report(synthesizer_mode="rule", retrieval_mode="sparse")
     assert doc["ok"] is True
-    assert doc["db"]["schema_version"] == 2
+    assert doc["db"]["schema_version"] == SCHEMA_VERSION
     assert doc["db"]["counts"]["arcs"] == 1
     assert doc["backup_count"] == 2
     await db.close()
@@ -238,7 +238,7 @@ def test_cli_subcommands_doctor_backup_export(tmp_path: Path, capsys) -> None:
     # 先用 SQLite 直接准备一条主线供 export-diary 导出
     cli_main(["doctor", "--config", str(cfg_toml)])
     doc_out = json.loads(capsys.readouterr().out)
-    assert doc_out["ok"] is True and doc_out["db"]["schema_version"] == 2
+    assert doc_out["ok"] is True and doc_out["db"]["schema_version"] == SCHEMA_VERSION
 
     custom_bk = tmp_path / "manual.sqlite3"
     cli_main(["backup", "--config", str(cfg_toml), "--out", str(custom_bk)])

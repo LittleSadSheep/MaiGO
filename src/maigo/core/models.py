@@ -72,6 +72,7 @@ class DailyChronicleRow:
     updated_at_ms: int
     mood_tag: str = ""
     unfinished_thread: str = ""
+    draft_source: str = "llm"
 
 
 @dataclass(frozen=True)
@@ -250,3 +251,125 @@ class EmbeddingRow:
     vector_blob: bytes
     content_hash: str
     updated_at_ms: int
+
+
+@dataclass(frozen=True)
+class EpisodeRow:
+    """场次档案目录记录（一场直播、一段游戏或一个归并对话窗口）。"""
+
+    id: int
+    branch_id: str
+    external_episode_id: str
+    kind: str
+    title: str
+    platform: str
+    save_id: Optional[str]
+    visibility: str
+    started_at_ms: int
+    ended_at_ms: Optional[int]
+    overview: str
+    metadata: Dict[str, Any]
+    updated_at_ms: int
+
+
+@dataclass(frozen=True)
+class NewEpisodeRecord:
+    """待写入原件书库的细粒度证据记录（不进日内整理，仅供按需检索）。"""
+
+    idempotency_key: str
+    branch_id: str
+    record_type: str
+    actor_role: str
+    visibility: str
+    occurred_at_ms: int
+    content: str
+    episode_id: Optional[int] = None
+    save_id: Optional[str] = None
+    title: str = ""
+    verbatim: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class EpisodeRecordRow:
+    """落库后的原件书库记录。"""
+
+    id: int
+    idempotency_key: str
+    episode_id: Optional[int]
+    branch_id: str
+    record_type: str
+    actor_role: str
+    visibility: str
+    occurred_at_ms: int
+    save_id: Optional[str]
+    title: str
+    content: str
+    verbatim: str
+    metadata: Dict[str, Any]
+    ingested_at_ms: int
+
+
+@dataclass(frozen=True)
+class KnowledgeEntityRow:
+    """实体关系图谱中的规范化实体节点（人物、玩家、生物、地点、物品或项目）。"""
+
+    id: int
+    entity_type: str
+    name: str
+    canonical_key: str
+    person_id: Optional[int]
+    save_id: Optional[str]
+    visibility: str
+    summary: str
+    aliases: List[str]
+    attributes: Dict[str, Any]
+    first_seen_ms: int
+    last_seen_ms: int
+    updated_at_ms: int
+
+
+@dataclass(frozen=True)
+class NewKnowledgeRelation:
+    """待写入实体关系图谱的事实边（主语-谓语-宾语及可核验事实文本）。"""
+
+    idempotency_key: str
+    branch_id: str
+    subject_entity_id: int
+    predicate: str
+    fact_text: str
+    visibility: str
+    occurred_at_ms: int
+    object_entity_id: Optional[int] = None
+    object_text: str = ""
+    quote: str = ""
+    save_id: Optional[str] = None
+    episode_id: Optional[int] = None
+    source_event_id: Optional[int] = None
+    confidence: float = 1.0
+    status: str = "active"
+
+
+@dataclass(frozen=True)
+class KnowledgeRelationRow:
+    """落库后的实体关系事实边。"""
+
+    id: int
+    idempotency_key: str
+    branch_id: str
+    subject_entity_id: int
+    predicate: str
+    object_entity_id: Optional[int]
+    object_text: str
+    fact_text: str
+    quote: str
+    visibility: str
+    save_id: Optional[str]
+    episode_id: Optional[int]
+    source_event_id: Optional[int]
+    confidence: float
+    status: str
+    occurred_at_ms: int
+    updated_at_ms: int
+    subject_name: str = ""
+    object_name: str = ""

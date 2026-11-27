@@ -249,7 +249,7 @@ class IdentityService:
         self,
         conn: sqlite3.Connection,
         *,
-        event_id: int,
+        event_id: Optional[int],
         branch_id: str,
         visibility: str,
         summary: str,

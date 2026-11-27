@@ -5,7 +5,7 @@
 ## 1. 传输约定
 
 - 基础协议：HTTP/1.1 JSON REST API（默认监听 `127.0.0.1:8768`）、同端口 Streamable HTTP MCP 入口（`/mcp`）以及 SSE 通知流（`/api/v1/stream/notifications`）。
-- 健康检查：`GET /health`（免鉴权）返回 `{"ok": true, "service": "maigo", "schema_version": 2, "synthesizer_mode": "llm|rule", "retrieval_mode": "hybrid|sparse"}`，用于探活与运行模式确认。
+- 健康检查：`GET /health`（免鉴权）返回 `{"ok": true, "service": "maigo", "schema_version": 3, "synthesizer_mode": "llm|rule", "retrieval_mode": "hybrid|sparse"}`，用于探活与运行模式确认。
 - 鉴权：当 `auth_token` 非空时，除 `/health` 与看板静态资源外的所有接口校验 `Authorization: Bearer <token>`。
 - 时间与幂等：时间字段统一为 Unix epoch 毫秒整数（`*_ms`）；事件写入支持 `idempotency_key`，服务端按 `(branch_id, idempotency_key)` 幂等去重。
 - 分支标识（`branch_id`）：各接入方使用稳定小写标识区分来源（例如 `maibot`、`amaidesu`、`bilibili_ops`、`x_ops`、`rss_collector`）。
@@ -61,8 +61,12 @@
 3. 标记话题已使用：`POST /api/v1/topics/{topic_id}/consume`
    请求体 `{"branch_id": "maibot"}`，将该分支追加进 `consumed_branches`。
 4. 混合回忆检索：`GET /api/v1/views/recall`
-   查询参数为 `query`、`days`、`limit`、`target_visibility`，内部与 MCP 工具共用同一检索服务，返回脱敏后的文本汇总。
-5. 状态变更订阅：`GET /api/v1/stream/notifications`
+   查询参数为 `query`、`days`（默认 `30`，`0` 表示不限天数）、`limit`、`target_visibility`、`branch_id`（可选，降低同端近期群聊回声权重）、`high_confidence_only`（可选，供自动预召回开启宁缺毋滥强命中门槛）、`include_structured`（可选，返回结构化命中列表与 `strong_hit` 标记），内部与 MCP 工具共用同一检索服务，返回附带日期与场次来源锚点的脱敏结果。
+5. 原件书库写入：`POST /api/v1/archive/ingest`
+   按场次（`episode`）与细粒度证据（`records`，如 `game_event`、`speech`、`timeline_chunk`、`work_doc`、`creature`、`archive_line`）幂等归档到 L0 原件书库并异步建向量索引；原件书库不进入日内时间线或稳定背景，仅供按需回忆检索。
+6. 实体关系图谱写入：`POST /api/v1/knowledge/ingest`
+   批量幂等登记实体节点（`entities`）与关系事实边（`relations`），自动按已绑定账号关联 `person_id` 并跳过遗忘名单账号，同时供跨端人物摘要与按需回忆检索使用。
+7. 状态变更订阅：`GET /api/v1/stream/notifications`
    以 SSE 推送 `events_ingested`、`brief_updated`、`presence_updated` 事件与保活注释帧。
 
 ### 3.2 场次型签出与签入（`server/routes/sessions.py`）
@@ -97,13 +101,13 @@ sequenceDiagram
 2. 会话心跳：`POST /api/v1/sessions/{checkout_id}/heartbeat`
    更新在播状态、当前环节、当前 `save_id` 并批量回写本轮选用的 `consumed_seed_ids`；`rehearsal` 彩排场次不向其他分支广播正式开播状态。
 3. 会话签入：`POST /api/v1/sessions/{checkout_id}/checkin`
-   提交本场概览、档案摘要（`archive_lines`）、约定更新（`promises`）、人物互动（`interactions`）及已聊话题 ID。若 `discarded=true` 或属于彩排场，仅结束会话而不污染当日时间线；正式场入库后立即执行一轮封存整理。
+   提交本场概览、档案摘要（`archive_lines`）、细粒度原件（`archive_records`）、约定更新（`promises`）、人物互动（`interactions`，支持 `kind` / `fact`）、实体社交事实（`social_facts`）及已聊话题 ID。互动与社交事实进入 L2 实体关系图谱而非 L1 原始事件，避免污染日内时间线；若 `discarded=true` 或属于彩排场，仅结束会话而不污染当日时间线；正式场入库后立即执行一轮封存整理。
 
 ### 3.3 MCP 工具接口（`/mcp`）
 
 通过 Streamable HTTP 暴露三个只读与状态核销工具：
 
-- `maigo_recall_life(query, days=7, limit=5, target_visibility="public")`：检索近期原始事件、持续主线与观点约定。
+- `maigo_recall_life(query, days=30, limit=5, target_visibility="public", branch_id=None)`：混合检索原件书库、实体关系图谱、原始事件、持续主线与观点约定（`days=0` 表示不限天数）。
 - `maigo_lookup_person(platform, external_id, target_visibility="public")`：查询已绑定人物的脱敏档案与跨端共同经历。
 - `maigo_resolve_promise(anchor_id, status, evidence="")`：将指定约定标记为 `closed` 或 `void`。
 

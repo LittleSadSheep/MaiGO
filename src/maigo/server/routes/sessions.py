@@ -8,8 +8,10 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from maigo.core.models import NewEpisodeRecord
 from maigo.core.privacy import normalize_visibility
 from maigo.server.auth import CtxDep, require_auth
+from maigo.server.routes.sync import ingest_knowledge_sync
 from maigo.server.schemas import (
     AnchorProjectionOut,
     CheckinRequest,
@@ -18,6 +20,8 @@ from maigo.server.schemas import (
     CheckoutResponse,
     HeartbeatRequest,
     HeartbeatResponse,
+    KnowledgeEntityIn,
+    KnowledgeRelationIn,
     PersonDirectoryEntryOut,
     TopicProjectionOut,
 )
@@ -165,9 +169,14 @@ async def checkin_session(
         )
         return CheckinResponse(checkout_id=checkout_id, ignored_rehearsal=True)
 
-    # 先将本场结构化结果映射为幂等原始事件再单批落库
+    # 先将本场 L1 纪要映射为幂等原始事件，同步拆出 L0 原件书库记录与 L2 实体关系事实
+    # （玩家互动不再写入 L1 experience_events，避免空壳 greet/gift 噪音污染日内时间线）
     events_to_ingest: List[NewExperienceEvent] = []
+    records_to_ingest: List[NewEpisodeRecord] = []
+    target_save = payload.save_id or session.save_id
+
     for idx, line in enumerate(payload.archive_lines):
+        line_save = line.save_id or target_save
         events_to_ingest.append(
             NewExperienceEvent(
                 idempotency_key=f"checkin-{checkout_id}-arc-{idx}",
@@ -179,8 +188,42 @@ async def checkin_session(
                 context_scope=f"{session.platform}:{session.room_id}",
                 summary=line.title,
                 verbatim=line.verbatim,
-                save_id=line.save_id or payload.save_id or session.save_id,
+                save_id=line_save,
                 metadata={"highlight": line.highlight, "topic_title": line.title},
+            )
+        )
+        records_to_ingest.append(
+            NewEpisodeRecord(
+                idempotency_key=f"checkin-{checkout_id}-arc-{idx}",
+                episode_id=None,
+                branch_id=session.branch_id,
+                record_type="archive_line",
+                actor_role="self",
+                visibility=session.visibility,
+                occurred_at_ms=payload.ended_at_ms,
+                save_id=line_save,
+                title=line.title,
+                content=line.verbatim.strip() or line.title,
+                verbatim=line.verbatim,
+                metadata={"highlight": line.highlight},
+            )
+        )
+
+    for rec in payload.archive_records:
+        records_to_ingest.append(
+            NewEpisodeRecord(
+                idempotency_key=rec.idempotency_key,
+                episode_id=None,
+                branch_id=session.branch_id,
+                record_type=rec.record_type,
+                actor_role=rec.actor_role,
+                visibility=normalize_visibility(rec.visibility, default=session.visibility),
+                occurred_at_ms=rec.occurred_at_ms,
+                save_id=rec.save_id or target_save,
+                title=rec.title,
+                content=rec.content,
+                verbatim=rec.verbatim,
+                metadata=rec.metadata,
             )
         )
 
@@ -196,43 +239,109 @@ async def checkin_session(
                 context_scope=f"{session.platform}:{session.room_id}",
                 summary=payload.overview.strip(),
                 verbatim=payload.overview.strip(),
-                save_id=payload.save_id or session.save_id,
+                save_id=target_save,
                 metadata={"session_overview": True},
             )
         )
 
+    relations_to_ingest: List[KnowledgeRelationIn] = list(payload.social_facts)
     for idx, inter in enumerate(payload.interactions):
-        events_to_ingest.append(
-            NewExperienceEvent(
+        fact_text = inter.fact.strip() or inter.summary.strip()
+        if not fact_text:
+            continue
+        plat_lower = inter.platform.strip().lower()
+        relations_to_ingest.append(
+            KnowledgeRelationIn(
                 idempotency_key=f"checkin-{checkout_id}-int-{idx}",
-                branch_id=session.branch_id,
-                occurred_at_ms=payload.ended_at_ms,
-                kind="interaction",
-                actor_role="peer",
+                subject=KnowledgeEntityIn(
+                    entity_type="player" if plat_lower == "minecraft" else "person",
+                    canonical_key=f"{plat_lower}:{inter.external_id.strip()}",
+                    name=inter.display_name.strip() or inter.external_id.strip(),
+                    platform=inter.platform,
+                    external_id=inter.external_id,
+                    save_id=target_save,
+                    visibility=inter.visibility,
+                    seen_at_ms=payload.ended_at_ms,
+                ),
+                predicate=inter.kind.strip() or "interacted_with",
+                fact_text=fact_text,
                 visibility=inter.visibility,
-                context_scope=f"{session.platform}:{session.room_id}",
-                actors=[
-                    ActorRef(platform=inter.platform, external_id=inter.external_id, display_name=inter.display_name)
-                ],
-                summary=inter.summary,
-                save_id=payload.save_id or session.save_id,
+                save_id=target_save,
+                occurred_at_ms=payload.ended_at_ms,
             )
         )
 
-    def _apply_checkin(conn: sqlite3.Connection) -> tuple[int, int]:
+    def _apply_checkin(conn: sqlite3.Connection) -> tuple[int, int, int, int, List[tuple[str, int, str]]]:
+        # 1. 登记或更新 L0 场次目录，支撑 4 小时内刚下播余温态与按场次召回锚点
+        ep_row = ctx.episodes_repo.upsert_episode(
+            conn,
+            branch_id=session.branch_id,
+            external_episode_id=session.external_session_id,
+            kind="live",
+            title=session.title,
+            platform=session.platform,
+            save_id=target_save,
+            visibility=session.visibility,
+            started_at_ms=session.started_at_ms,
+            ended_at_ms=payload.ended_at_ms,
+            overview=payload.overview.strip(),
+            metadata={"checkout_id": checkout_id, "room_id": session.room_id},
+        )
+        to_embed: List[tuple[str, int, str]] = []
+        if ep_row.overview:
+            to_embed.append(("episode", ep_row.id, f"{ep_row.title} {ep_row.overview}".strip()))
+
+        # 2. 写入 L1 场次主线事件
         ing = ctx.events_repo.ingest_batch(conn, events_to_ingest)
-        for eid in ing.inserted_ids:
-            ev = ctx.events_repo.get_by_id(conn, eid)
-            if ev is not None and ev.actors:
-                ctx.identity.record_event_actors_sync(
-                    conn,
-                    event_id=ev.id,
-                    branch_id=ev.branch_id,
-                    visibility=ev.visibility,
-                    summary=ev.summary,
-                    occurred_at_ms=ev.occurred_at_ms,
-                    actors=ev.actors,
-                )
+
+        # 3. 写入 L0 原件书库记录并挂接本场 episode_id
+        bound_records = [
+            NewEpisodeRecord(
+                idempotency_key=r.idempotency_key,
+                episode_id=ep_row.id,
+                branch_id=r.branch_id,
+                record_type=r.record_type,
+                actor_role=r.actor_role,
+                visibility=r.visibility,
+                occurred_at_ms=r.occurred_at_ms,
+                save_id=r.save_id,
+                title=r.title,
+                content=r.content,
+                verbatim=r.verbatim,
+                metadata=r.metadata,
+            )
+            for r in records_to_ingest
+        ]
+        rec_ing = ctx.episodes_repo.ingest_records(conn, bound_records)
+        for rid in rec_ing.inserted_ids:
+            saved_rec = ctx.episodes_repo.get_record_by_id(conn, rid)
+            if saved_rec is not None:
+                text = f"{saved_rec.title} {saved_rec.content}".strip()
+                if text:
+                    to_embed.append(("record", saved_rec.id, text))
+
+        # 4. 本场熟人互动写入跨端人物履历与 L2 实体关系图谱（自动跳过遗忘账号）
+        for inter in payload.interactions:
+            ctx.identity.record_event_actors_sync(
+                conn,
+                event_id=None,
+                branch_id=session.branch_id,
+                visibility=inter.visibility,
+                summary=inter.fact.strip() or inter.summary.strip(),
+                occurred_at_ms=payload.ended_at_ms,
+                actors=[
+                    ActorRef(platform=inter.platform, external_id=inter.external_id, display_name=inter.display_name)
+                ],
+            )
+        _ent_cnt, rel_accepted, _rel_dup, _skipped, rel_embed = ingest_knowledge_sync(
+            ctx,
+            conn,
+            branch_id=session.branch_id,
+            entities=(),
+            relations=relations_to_ingest,
+            default_episode_id=ep_row.id,
+        )
+        to_embed.extend(rel_embed)
 
         updated_promises = 0
         for p_idx, prom in enumerate(payload.promises):
@@ -259,7 +368,7 @@ async def checkin_session(
                             visibility=session.visibility,
                             summary=prom.content,
                             verbatim=prom.verbatim,
-                            save_id=prom.save_id or payload.save_id or session.save_id,
+                            save_id=prom.save_id or target_save,
                             metadata={
                                 "promise_action": prom.status,
                                 "promise_content": prom.content,
@@ -277,7 +386,7 @@ async def checkin_session(
                         source_event_id=ev_res.inserted_ids[0],
                         branch_id=session.branch_id,
                         visibility=session.visibility,
-                        save_id=prom.save_id or payload.save_id or session.save_id,
+                        save_id=prom.save_id or target_save,
                         status=prom.status,
                         note=prom.note,
                     )
@@ -286,7 +395,6 @@ async def checkin_session(
         for seed_id in payload.consumed_seed_ids:
             ctx.topics_repo.mark_consumed(conn, topic_id=seed_id, branch_id=session.branch_id)
 
-        target_save = payload.save_id or session.save_id
         if target_save and (payload.save_summary.strip() or payload.overview.strip()):
             ctx.sessions_repo.upsert_save_state(
                 conn,
@@ -297,15 +405,19 @@ async def checkin_session(
 
         ctx.sessions_repo.finish_checkout(conn, checkout_id=checkout_id)
         ctx.sessions_repo.touch_branch(conn, branch_id=session.branch_id, mode="session", status="offline")
-        return len(ing.inserted_ids), updated_promises
+        return len(ing.inserted_ids), len(rec_ing.inserted_ids), rel_accepted, updated_promises, to_embed
 
-    ingested_count, updated_promises = await ctx.db.run(_apply_checkin)
+    ingested_count, records_count, relations_count, updated_promises, to_embed = await ctx.db.run(_apply_checkin)
+    if ctx.config.embedding.auto_index and to_embed:
+        await ctx.retrieval.index_items(to_embed)
     # 签入后立即执行一轮封存整理，使常驻分支下次即可拉取到本场结论
     report = await ctx.bg_synthesizer.trigger_now(force_seal=True)
     ctx.broker.publish("presence_updated", {"branch_id": session.branch_id, "live": False})
     return CheckinResponse(
         checkout_id=checkout_id,
         ingested_events=ingested_count,
+        ingested_records=records_count,
+        ingested_relations=relations_count,
         updated_promises=updated_promises,
         sealed_slots=report.sealed_slots,
     )

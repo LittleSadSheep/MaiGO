@@ -32,17 +32,27 @@ def _tool_definitions() -> List[types.Tool]:
     return [
         types.Tool(
             name="maigo_recall_life",
-            description="检索麦麦近期在各个分支（QQ群、B站、X、直播、游戏）的经历与言行立场。",
+            description="检索麦麦在各个分支（QQ群、B站、X、直播、游戏）的经历、原件书库细节、实体关系与立场约定。",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "要回想的关键词或话题"},
-                    "days": {"type": "integer", "default": 7, "minimum": 1, "maximum": 90},
+                    "days": {
+                        "type": "integer",
+                        "default": 30,
+                        "minimum": 0,
+                        "maximum": 365,
+                        "description": "往前检索几天，默认 30（0 表示不限天数翻查全部历史）",
+                    },
                     "limit": {"type": "integer", "default": 5, "minimum": 1, "maximum": 20},
                     "target_visibility": {
                         "type": "string",
                         "enum": ["public", "group", "private"],
                         "default": "public",
+                    },
+                    "branch_id": {
+                        "type": "string",
+                        "description": "调用方分支标识，用于降低近期同端群聊回声权重",
                     },
                 },
                 "required": ["query"],
@@ -145,10 +155,19 @@ async def _dispatch_tool(ctx: MaiGOContext, *, name: str, args: Dict[str, Any]) 
         query = str(args.get("query") or "").strip()
         if not query:
             return "请提供要检索的 query 关键词。", True
-        days = int(args.get("days") or 7)
-        limit = int(args.get("limit") or 5)
+        raw_days = args.get("days")
+        days = int(raw_days) if raw_days is not None else 30
+        raw_limit = args.get("limit")
+        limit = int(raw_limit) if raw_limit is not None else 5
         vis = normalize_visibility(str(args.get("target_visibility") or "public"), default="public")
-        text = await ctx.projector.recall_life(query=query, days=days, limit=limit, target_visibility=vis)
+        branch_id = str(args.get("branch_id") or "").strip() or None
+        text = await ctx.projector.recall_life(
+            query=query,
+            days=days,
+            limit=limit,
+            target_visibility=vis,
+            exclude_branch=branch_id,
+        )
         return text, False
 
     if name == "maigo_lookup_person":

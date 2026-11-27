@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Sequence, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
+from maigo.container import MaiGOContext
+from maigo.core.models import NewEpisodeRecord, NewKnowledgeRelation
 from maigo.core.privacy import normalize_visibility
 from maigo.runtime import get_logger
 from maigo.server.auth import CtxDep, require_auth
@@ -16,11 +18,17 @@ from maigo.server.schemas import (
     ActiveSessionOut,
     ActorCardOut,
     AnchorProjectionOut,
+    ArchiveIngestIn,
+    ArchiveIngestOut,
     ContextViewOut,
     EventIn,
     EventsBatchIn,
     EventsIngestOut,
     EventsPayloadIn,
+    KnowledgeEntityIn,
+    KnowledgeIngestIn,
+    KnowledgeIngestOut,
+    KnowledgeRelationIn,
     TopicConsumeIn,
     TopicProjectionOut,
 )
@@ -245,17 +253,242 @@ async def consume_topic(
     return {"ok": True, "topic_id": updated.id, "consumed_branches": updated.consumed_branches}
 
 
+def ingest_knowledge_sync(
+    ctx: MaiGOContext,
+    conn: sqlite3.Connection,
+    *,
+    branch_id: str,
+    entities: Sequence[KnowledgeEntityIn],
+    relations: Sequence[KnowledgeRelationIn],
+    default_episode_id: Optional[int] = None,
+) -> Tuple[int, int, int, int, List[Tuple[str, int, str]]]:
+    """在单次 SQLite 写事务中同步写入实体节点与关系边，自动绑定 person_id 并跳过遗忘账号。
+
+    执行顺序：先校验外部账号是否命中遗忘名单 -> 已绑定账号挂接 person_id -> 幂等写入实体与关系边
+    -> 收集新建关系边的待向量化文本返回给异步层建索引。
+    """
+    entities_upserted = 0
+    relations_accepted = 0
+    relations_dedup = 0
+    skipped_forgotten = 0
+    to_embed: List[Tuple[str, int, str]] = []
+
+    def _upsert_entity(ent: KnowledgeEntityIn) -> Tuple[Optional[int], bool]:
+        plat = ent.platform.strip()
+        ext_id = ent.external_id.strip()
+        person_id: Optional[int] = None
+        if plat and ext_id:
+            if ctx.persons_repo.is_forgotten_hash(conn, ctx.identity.hash_identity(plat, ext_id)):
+                return None, True
+            ident = ctx.persons_repo.get_identity(conn, platform=plat, external_id=ext_id)
+            if ident is not None:
+                person_id = ident.person_id
+        row = ctx.knowledge_repo.upsert_entity(
+            conn,
+            entity_type=ent.entity_type,
+            canonical_key=ent.canonical_key,
+            name=ent.name,
+            person_id=person_id,
+            save_id=ent.save_id,
+            visibility=normalize_visibility(ent.visibility, default="public"),
+            summary=ent.summary,
+            aliases=ent.aliases,
+            attributes=ent.attributes,
+            seen_at_ms=ent.seen_at_ms,
+        )
+        return row.id, False
+
+    for ent in entities:
+        eid, forgotten = _upsert_entity(ent)
+        if forgotten:
+            skipped_forgotten += 1
+        elif eid is not None:
+            entities_upserted += 1
+
+    for rel in relations:
+        subj_id, subj_forgotten = _upsert_entity(rel.subject)
+        if subj_forgotten or subj_id is None:
+            skipped_forgotten += 1
+            continue
+        obj_id: Optional[int] = None
+        if rel.object_entity is not None:
+            obj_id, obj_forgotten = _upsert_entity(rel.object_entity)
+            if obj_forgotten:
+                skipped_forgotten += 1
+                continue
+        ep_id = default_episode_id
+        if rel.external_episode_id:
+            ep = ctx.episodes_repo.get_by_external(
+                conn, branch_id=branch_id, external_episode_id=rel.external_episode_id
+            )
+            if ep is not None:
+                ep_id = ep.id
+        rel_id, created = ctx.knowledge_repo.upsert_relation(
+            conn,
+            NewKnowledgeRelation(
+                idempotency_key=rel.idempotency_key,
+                branch_id=branch_id,
+                subject_entity_id=subj_id,
+                predicate=rel.predicate,
+                object_entity_id=obj_id,
+                object_text=rel.object_text,
+                fact_text=rel.fact_text,
+                quote=rel.quote,
+                visibility=normalize_visibility(rel.visibility, default="public"),
+                save_id=rel.save_id,
+                episode_id=ep_id,
+                confidence=rel.confidence,
+                status=rel.status,
+                occurred_at_ms=rel.occurred_at_ms,
+            ),
+        )
+        if created and rel_id > 0:
+            relations_accepted += 1
+            obj_part = rel.object_entity.name if rel.object_entity is not None else rel.object_text
+            embed_text = f"{rel.subject.name} {rel.predicate} {obj_part}：{rel.fact_text}".strip()
+            to_embed.append(("relation", rel_id, embed_text))
+        else:
+            relations_dedup += 1
+
+    return entities_upserted, relations_accepted, relations_dedup, skipped_forgotten, to_embed
+
+
+@router.post("/api/v1/archive/ingest", response_model=ArchiveIngestOut)
+async def ingest_archive(payload: ArchiveIngestIn, ctx: CtxDep) -> ArchiveIngestOut:
+    """将场次目录与细粒度原始证据幂等归档到 L0 原件书库（绝不进入日内摘要）。"""
+
+    def _op(
+        conn: sqlite3.Connection,
+    ) -> Tuple[Optional[int], List[int], int, List[Tuple[str, int, str]]]:
+        ep_id: Optional[int] = None
+        embed_items: List[Tuple[str, int, str]] = []
+        if payload.episode is not None:
+            ep_in = payload.episode
+            ep_row = ctx.episodes_repo.upsert_episode(
+                conn,
+                branch_id=ep_in.branch_id.strip() or payload.branch_id,
+                external_episode_id=ep_in.external_episode_id,
+                kind=ep_in.kind,
+                title=ep_in.title,
+                platform=ep_in.platform,
+                save_id=ep_in.save_id,
+                visibility=normalize_visibility(ep_in.visibility, default="public"),
+                started_at_ms=ep_in.started_at_ms,
+                ended_at_ms=ep_in.ended_at_ms,
+                overview=ep_in.overview,
+                metadata=ep_in.metadata,
+            )
+            ep_id = ep_row.id
+            if ep_row.overview:
+                embed_items.append(("episode", ep_row.id, f"{ep_row.title} {ep_row.overview}".strip()))
+
+        new_records = [
+            NewEpisodeRecord(
+                idempotency_key=rec.idempotency_key,
+                episode_id=ep_id,
+                branch_id=payload.branch_id,
+                record_type=rec.record_type,
+                actor_role=rec.actor_role,
+                visibility=normalize_visibility(rec.visibility, default="public"),
+                occurred_at_ms=rec.occurred_at_ms,
+                save_id=rec.save_id,
+                title=rec.title,
+                content=rec.content,
+                verbatim=rec.verbatim,
+                metadata=rec.metadata,
+            )
+            for rec in payload.records
+        ]
+        res = ctx.episodes_repo.ingest_records(conn, new_records)
+        for rid in res.inserted_ids:
+            saved = ctx.episodes_repo.get_record_by_id(conn, rid)
+            if saved is not None:
+                text = f"{saved.title} {saved.content}".strip()
+                if text:
+                    embed_items.append(("record", saved.id, text))
+        return ep_id, res.inserted_ids, res.deduplicated_count, embed_items
+
+    episode_id, inserted_ids, deduplicated, to_embed = await ctx.db.run(_op)
+    if ctx.config.embedding.auto_index and to_embed:
+        await ctx.retrieval.index_items(to_embed)
+    return ArchiveIngestOut(
+        episode_id=episode_id,
+        accepted=len(inserted_ids),
+        deduplicated=deduplicated,
+        inserted_ids=inserted_ids,
+    )
+
+
+@router.post("/api/v1/knowledge/ingest", response_model=KnowledgeIngestOut)
+async def ingest_knowledge(payload: KnowledgeIngestIn, ctx: CtxDep) -> KnowledgeIngestOut:
+    """批量写入 L2 实体节点与关系事实边，自动关联已绑定人物并跳过遗忘账号。"""
+    entities_upserted, accepted, deduplicated, skipped, to_embed = await ctx.db.run(
+        lambda c: ingest_knowledge_sync(
+            ctx,
+            c,
+            branch_id=payload.branch_id,
+            entities=payload.entities,
+            relations=payload.relations,
+        )
+    )
+    if ctx.config.embedding.auto_index and to_embed:
+        await ctx.retrieval.index_items(to_embed)
+    return KnowledgeIngestOut(
+        entities_upserted=entities_upserted,
+        relations_accepted=accepted,
+        relations_deduplicated=deduplicated,
+        skipped_forgotten=skipped,
+    )
+
+
 @router.get("/api/v1/views/recall")
 async def recall_life_view(
     ctx: CtxDep,
     query: str = Query(..., min_length=1, max_length=200),
-    days: int = Query(default=7, ge=1, le=90),
+    days: int = Query(default=30, ge=0, le=365),
     limit: int = Query(default=5, ge=1, le=20),
     target_visibility: str = Query(default="public"),
+    branch_id: Optional[str] = Query(default=None),
+    high_confidence_only: bool = Query(default=False),
+    include_structured: bool = Query(default=False),
 ) -> Dict[str, Any]:
-    """按关键词检索跨端经历与立场锚点（HTTP 接口，与 MCP ``maigo_recall_life`` 同源）。"""
+    """按关键词检索跨端原件书库、实体关系与立场约定（与 MCP ``maigo_recall_life`` 同源）。"""
     vis = normalize_visibility(target_visibility, default="public")
-    text = await ctx.projector.recall_life(query=query.strip(), days=days, limit=limit, target_visibility=vis)
+    clean_branch = branch_id.strip() if branch_id and branch_id.strip() else None
+    if include_structured:
+        res = await ctx.projector.recall_life_structured(
+            query=query.strip(),
+            days=days,
+            limit=limit,
+            target_visibility=vis,
+            exclude_branch=clean_branch,
+            high_confidence_only=high_confidence_only,
+        )
+        if res is not None:
+            return {
+                "ok": True,
+                "text": res.text,
+                "strong_hit": res.strong_hit,
+                "hits": [
+                    {
+                        "item_type": h.item_type,
+                        "item_id": h.item_id,
+                        "text": h.text,
+                        "score": round(h.score, 4),
+                        "occurred_at_ms": h.occurred_at_ms,
+                        "strong_hit": h.strong_hit,
+                    }
+                    for h in res.hits
+                ],
+            }
+    text = await ctx.projector.recall_life(
+        query=query.strip(),
+        days=days,
+        limit=limit,
+        target_visibility=vis,
+        exclude_branch=clean_branch,
+        high_confidence_only=high_confidence_only,
+    )
     return {"ok": True, "text": text}
 
 

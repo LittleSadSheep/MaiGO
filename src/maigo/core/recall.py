@@ -54,11 +54,11 @@ logger = get_logger("services.retrieval")
 _RRF_K = 60.0
 # 面向中文向量模型（如 bge-m3）的余弦底线：低于 0.48 不参与融合，杜绝无关记录凑数
 _MIN_COSINE_SCORE = 0.48
-# 自动预召回的强语义命中门槛，宁缺毋滥
+# 自动预召回的强语义命中门槛：有实词重合需 >=0.56，纯跨词语义命中需 >=0.68，宁缺毋滥
 _HIGH_CONF_COSINE_SCORE = 0.56
+_PURE_SEMANTIC_HIGH_CONF = 0.68
 _DECAY_HALF_LIFE_DAYS = 60.0
 _DAY_MS = 24 * 3600 * 1000
-_ECHO_WINDOW_MS = 60 * 60 * 1000
 
 _RECORD_TYPE_LABELS: Dict[str, str] = {
     "game_event": "游戏记录",
@@ -348,13 +348,9 @@ class HybridRecallService:
         terms = extract_query_terms(query)
         echo_branch = (exclude_branch or "").strip().lower()
 
-        def _is_recent_self_echo(branch_id: str, kind: str, occurred_ms: int) -> bool:
-            return bool(
-                echo_branch
-                and branch_id.strip().lower() == echo_branch
-                and kind == "speech"
-                and (now - occurred_ms) <= _ECHO_WINDOW_MS
-            )
+        def _is_same_branch_speech(branch_id: str, kind: str) -> bool:
+            """判断条目是否属于调用方分支自身的历史发言（自动预召回专注跨端记忆，普通召回对其降权）。"""
+            return bool(echo_branch and branch_id.strip().lower() == echo_branch and kind == "speech")
 
         def _sparse_collect(conn: sqlite3.Connection) -> tuple[List[str], Dict[Tuple[str, int], _CandidateItem]]:
             all_ext_ids = [item.external_id for item in self._persons.list_all_identities(conn)]
@@ -373,7 +369,7 @@ class HybridRecallService:
             for rec in self._episodes.search_records(
                 conn, query=query, since_ms=since_ms, visibilities=vis_allowed, limit=cap * 2
             ):
-                if high_confidence_only and _is_recent_self_echo(rec.branch_id, rec.record_type, rec.occurred_at_ms):
+                if high_confidence_only and _is_same_branch_speech(rec.branch_id, rec.record_type):
                     continue
                 item = self._format_record(rec, _get_ep(rec.episode_id), all_ext_ids, terms, sparse_rank=rank)
                 cands[item.key] = item
@@ -408,7 +404,7 @@ class HybridRecallService:
                 cands[item.key] = item
                 rank += 1
 
-            # 5. L1 原始事件（跳过空壳游戏互动，对同端近期群聊回声降权或跳过）
+            # 5. L1 原始事件（跳过空壳游戏互动；高置信自动预召回跳过同端自身发言，普通召回对其降权）
             for ev in self._events.search(conn, query=query, since_ms=since_ms, visibilities=vis_allowed, limit=cap * 2):
                 if (
                     ev.kind == "forget_request"
@@ -416,10 +412,10 @@ class HybridRecallService:
                     or self._identity.has_forgotten_actor_sync(conn, ev.actors)
                 ):
                     continue
-                is_echo = _is_recent_self_echo(ev.branch_id, ev.kind, ev.occurred_at_ms)
-                if high_confidence_only and is_echo:
+                same_speech = _is_same_branch_speech(ev.branch_id, ev.kind)
+                if high_confidence_only and same_speech:
                     continue
-                item = self._format_event(ev, all_ext_ids, terms, sparse_rank=rank, echo_penalty=is_echo)
+                item = self._format_event(ev, all_ext_ids, terms, sparse_rank=rank, echo_penalty=same_speech)
                 cands[item.key] = item
                 rank += 1
 
@@ -486,7 +482,9 @@ class HybridRecallService:
             return RecallResult(text="", hits=[], strong_hit=False)
 
         def _is_strong(item: _CandidateItem) -> bool:
-            if item.cosine_score >= _HIGH_CONF_COSINE_SCORE:
+            if item.cosine_score >= _PURE_SEMANTIC_HIGH_CONF:
+                return True
+            if item.cosine_score >= _HIGH_CONF_COSINE_SCORE and item.term_hits >= 1:
                 return True
             if item.term_hits >= 2:
                 return True
@@ -555,9 +553,12 @@ class HybridRecallService:
         echo_branch: str,
         high_confidence_only: bool,
     ) -> Optional[_CandidateItem]:
+        del now_ms_val
         if item_type == "record":
             rec = self._episodes.get_record_by_id(conn, item_id)
             if rec is None or rec.visibility not in vis_allowed or (since_ms > 0 and rec.occurred_at_ms < since_ms):
+                return None
+            if high_confidence_only and echo_branch and rec.branch_id.strip().lower() == echo_branch and rec.record_type == "speech":
                 return None
             ep = self._episodes.get_episode(conn, rec.episode_id) if rec.episode_id is not None else None
             return self._format_record(rec, ep, all_ext_ids, terms)
@@ -588,15 +589,10 @@ class HybridRecallService:
                 or self._identity.has_forgotten_actor_sync(conn, ev.actors)
             ):
                 return None
-            is_echo = bool(
-                echo_branch
-                and ev.branch_id.strip().lower() == echo_branch
-                and ev.kind == "speech"
-                and (now_ms_val - ev.occurred_at_ms) <= _ECHO_WINDOW_MS
-            )
-            if high_confidence_only and is_echo:
+            same_speech = bool(echo_branch and ev.branch_id.strip().lower() == echo_branch and ev.kind == "speech")
+            if high_confidence_only and same_speech:
                 return None
-            return self._format_event(ev, all_ext_ids, terms, echo_penalty=is_echo)
+            return self._format_event(ev, all_ext_ids, terms, echo_penalty=same_speech)
         if item_type == "anchor":
             anc = self._anchors.get_by_id(conn, item_id)
             if anc is None or anc.visibility not in vis_allowed or anc.status == "void":

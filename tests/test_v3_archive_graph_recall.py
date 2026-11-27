@@ -262,13 +262,13 @@ async def test_archive_knowledge_recall_antiecho_and_just_ended_flow(tmp_path: P
             assert kg_resp.status_code == 200
             assert kg_resp.json()["relations_accepted"] == 1
 
-            # 4. 在群聊里写入一条刚发出的“模糊回声”发言，验证 branch_id=maibot 抗回声生效
+            # 4. 在群聊里写入一条旧回声发言（即使超过 1 小时），验证高置信度自动预召回专注跨端记录不自回声
             await client.post(
                 "/api/v1/events",
                 json={
                     "idempotency_key": "qq-echo-1",
                     "branch_id": "maibot",
-                    "occurred_at_ms": _ms(2026, 11, 26, 22, 25),
+                    "occurred_at_ms": _ms(2026, 11, 26, 10, 0),
                     "kind": "speech",
                     "actor_role": "self",
                     "visibility": "group",

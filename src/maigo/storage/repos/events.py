@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 from maigo.core.models import ActorRef, ExperienceEventRow, NewExperienceEvent
 from maigo.runtime import ClockMs, now_ms
+from maigo.storage.repos._text import build_fts_match, build_trigram_match, count_term_hits, extract_query_terms
 
 
 @dataclass(frozen=True)
@@ -53,16 +54,6 @@ def _row_to_event(row: sqlite3.Row) -> ExperienceEventRow:
     )
 
 
-def _trigram_query(query: str) -> str:
-    """为至少包含一个 3 字符词段的查询构造 FTS5 trigram 短语表达，提升中文局部匹配。"""
-    tokens = [tok.replace('"', "").strip() for tok in query.split()]
-    valid = [f'"{tok}"' for tok in tokens if len(tok) >= 3]
-    if valid:
-        return " OR ".join(valid)
-    cleaned = query.replace('"', "").strip()
-    return f'"{cleaned}"' if len(cleaned) >= 3 else ""
-
-
 def _query_fts_table(
     conn: sqlite3.Connection,
     *,
@@ -75,18 +66,24 @@ def _query_fts_table(
     if not match_expr:
         return []
     vis_placeholders = ",".join("?" for _ in vis_list)
+    time_clause = "AND e.occurred_at_ms >= ?" if int(since_ms) > 0 else ""
+    params: List[Any] = [match_expr]
+    if int(since_ms) > 0:
+        params.append(int(since_ms))
+    params.extend(vis_list)
+    params.append(max(1, int(limit)))
     try:
         rows = conn.execute(
             f"""
             SELECT e.* FROM {fts_table} f
             JOIN experience_events e ON e.id = f.rowid
             WHERE {fts_table} MATCH ?
-              AND e.occurred_at_ms >= ?
+              {time_clause}
               AND e.visibility IN ({vis_placeholders})
             ORDER BY rank, e.occurred_at_ms DESC
             LIMIT ?
             """,
-            (match_expr, int(since_ms), *vis_list, max(1, int(limit))),
+            tuple(params),
         ).fetchall()
         return [_row_to_event(row) for row in rows]
     except sqlite3.OperationalError:
@@ -267,66 +264,76 @@ class ExperienceEventRepo:
         visibilities: Sequence[str],
         limit: int = 10,
     ) -> List[ExperienceEventRow]:
-        """混合 FTS5 与中文子串兜底检索事件，按相关度与新近度去重返回。"""
+        """混合 FTS5（unicode61 + trigram）与中文拆词 LIKE 检索事件，按实词命中数与新近度排序。"""
         vis_list = list(visibilities)
         if not vis_list:
             return []
         vis_placeholders = ",".join("?" for _ in vis_list)
         stripped = query.strip()
         if not stripped:
-            return self.list_recent(conn, since_ms=since_ms, visibilities=vis_list, limit=limit)
+            return self.list_recent(
+                conn,
+                since_ms=since_ms if int(since_ms) > 0 else None,
+                visibilities=vis_list,
+                limit=limit,
+            )
 
-        results: Dict[int, Tuple[int, ExperienceEventRow]] = {}
-        cleaned = stripped.replace('"', " ").strip()
-        fts_query = f'"{cleaned}"' if cleaned else ""
-        rank_cursor = 0
+        # 使用统一中文拆词助手，避免整段问句被死锁为连续子串而漏检
+        terms = extract_query_terms(stripped)
+        found: Dict[int, ExperienceEventRow] = {}
 
-        for ev in _query_fts_table(
-            conn,
-            fts_table="experience_events_fts",
-            match_expr=fts_query,
-            since_ms=since_ms,
-            vis_list=vis_list,
-            limit=limit,
+        for table, expr in (
+            ("experience_events_fts", build_fts_match(stripped)),
+            ("experience_events_trigram", build_trigram_match(stripped)),
         ):
-            if ev.id not in results:
-                results[ev.id] = (rank_cursor, ev)
-                rank_cursor += 1
+            for ev in _query_fts_table(
+                conn,
+                fts_table=table,
+                match_expr=expr,
+                since_ms=since_ms,
+                vis_list=vis_list,
+                limit=max(1, int(limit) * 2),
+            ):
+                found.setdefault(ev.id, ev)
 
-        # 补一层 trigram 中文任意子串召回（3 字及以上连续词段命中）
-        for ev in _query_fts_table(
-            conn,
-            fts_table="experience_events_trigram",
-            match_expr=_trigram_query(stripped),
-            since_ms=since_ms,
-            vis_list=vis_list,
-            limit=limit,
-        ):
-            if ev.id not in results:
-                results[ev.id] = (rank_cursor, ev)
-                rank_cursor += 1
-
-        # 补一层 LIKE 子串精确召回（兜底 1~2 字超短中文词）
-        like_pattern = f"%{stripped}%"
+        # 拆词 LIKE 兜底覆盖 2 字短中文实词（如“钻石”“袭击”）
+        like_terms = [tok for tok in terms if len(tok) >= 2][:6] or [stripped]
+        or_clauses = " OR ".join(
+            "(summary LIKE ? OR verbatim LIKE ? OR reaction LIKE ? OR context_scope LIKE ?)" for _ in like_terms
+        )
+        time_clause = "occurred_at_ms >= ? AND" if int(since_ms) > 0 else ""
+        like_params: List[Any] = []
+        if int(since_ms) > 0:
+            like_params.append(int(since_ms))
+        like_params.extend(vis_list)
+        for tok in like_terms:
+            pat = f"%{tok}%"
+            like_params.extend((pat, pat, pat, pat))
+        like_params.append(max(1, int(limit) * 2))
         like_rows = conn.execute(
             f"""
             SELECT * FROM experience_events
-            WHERE occurred_at_ms >= ?
-              AND visibility IN ({vis_placeholders})
-              AND (summary LIKE ? OR verbatim LIKE ? OR reaction LIKE ? OR context_scope LIKE ?)
+            WHERE {time_clause} visibility IN ({vis_placeholders})
+              AND ({or_clauses})
             ORDER BY occurred_at_ms DESC, id DESC
             LIMIT ?
             """,
-            (int(since_ms), *vis_list, like_pattern, like_pattern, like_pattern, like_pattern, max(1, int(limit))),
+            tuple(like_params),
         ).fetchall()
         for row in like_rows:
             ev = _row_to_event(row)
-            if ev.id not in results:
-                results[ev.id] = (rank_cursor, ev)
-                rank_cursor += 1
+            found.setdefault(ev.id, ev)
 
-        ordered = sorted(results.values(), key=lambda pair: (pair[0], -pair[1].occurred_at_ms))
-        return [pair[1] for pair in ordered[: max(1, int(limit))]]
+        scored = [
+            (
+                count_term_hits(f"{ev.summary} {ev.verbatim} {ev.reaction}", terms),
+                ev.occurred_at_ms,
+                ev,
+            )
+            for ev in found.values()
+        ]
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [item[2] for item in scored[: max(1, int(limit))]]
 
     def scrub_actor_name(self, conn: sqlite3.Connection, *, platform: str, external_id: str, replacement: str) -> int:
         """执行遗忘时，将事件 ``actors_json`` 中命中该外部账号的显示名抹去。"""

@@ -118,6 +118,7 @@ def build_context(
         identity=identity,
         embedding_config=config.embedding,
         embedding_client=embedding_client,
+        timezone_offset_hours=config.timezone_offset_hours,
         clock_ms=clock_ms,
     )
     maintenance = MaintenanceService(db, config=config, clock_ms=clock_ms)

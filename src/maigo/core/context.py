@@ -14,9 +14,9 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
-from maigo.core.digest_rules import SLOT_LABELS, compute_day_and_slot, slot_rank
+from maigo.core.digest_rules import SLOT_LABELS, compute_day_and_slot, is_hollow_interaction, slot_rank
 from maigo.core.identity import ActorCardProjection, IdentityService, PersonDirectoryEntry
-from maigo.core.models import CheckoutSessionRow, DailyChronicleRow, LifeArcRow, PersonaAnchorRow
+from maigo.core.models import CheckoutSessionRow, DailyChronicleRow, EpisodeRow, LifeArcRow, PersonaAnchorRow
 from maigo.core.privacy import (
     allowed_visibilities,
     describe_visibility_scope,
@@ -27,6 +27,7 @@ from maigo.runtime import ClockMs, now_ms
 from maigo.storage.db import MaiGODatabase
 from maigo.storage.repos import (
     DailyChronicleRepo,
+    EpisodeRepo,
     ExperienceEventRepo,
     LifeArcRepo,
     PersonaAnchorRepo,
@@ -36,7 +37,7 @@ from maigo.storage.repos import (
 )
 
 if TYPE_CHECKING:
-    from maigo.core.recall import HybridRecallService
+    from maigo.core.recall import HybridRecallService, RecallResult
 
 _BRANCH_LABELS = {
     "maibot": "QQ群",
@@ -152,6 +153,7 @@ class ViewProjector:
         self._persons = PersonRepo(clock_ms=clock_ms)
         self._sessions = SessionRepo(clock_ms=clock_ms)
         self._arcs = LifeArcRepo(clock_ms=clock_ms)
+        self._episodes = EpisodeRepo(clock_ms=clock_ms)
 
     async def build_context(
         self,
@@ -205,18 +207,31 @@ class ViewProjector:
             etag = hashlib.sha256(stable_text.encode("utf-8")).hexdigest()[:16]
             unchanged = bool(if_brief_etag and if_brief_etag.strip() == etag)
 
-            # 2. 快层组装：在线正式直播状态 + 当前未封存窗口近期动态
+            # 2. 实时动态组装：在线正式直播状态、4 小时内刚下播余温与当前未封存窗口近期动态
             active_sessions = self._sessions.list_active_checkouts(conn)
+            just_ended: List[Tuple[CheckoutSessionRow, Optional[EpisodeRow]]] = []
+            if not any(s.branch_id != branch_id for s in active_sessions):
+                recent_cutoff = now - 4 * 3600 * 1000
+                for sess in self._sessions.list_recent_checkouts(conn, limit=5):
+                    if sess.active or sess.branch_id == branch_id:
+                        continue
+                    if sess.ended_at_ms is not None and sess.ended_at_ms >= recent_cutoff:
+                        ep = self._episodes.get_by_external(
+                            conn, branch_id=sess.branch_id, external_episode_id=sess.external_session_id
+                        )
+                        just_ended.append((sess, ep))
+                        break
             open_rows = self._chronicle.list_by_day(conn, day_key=current_day, status="open")
             recent_events = self._events.list_recent(
                 conn,
                 since_ms=now - self._recent_window_ms,
                 visibilities=vis_allowed,
-                limit=6,
+                limit=15,
             )
             live_text = self._render_live_context(
                 branch_id=branch_id,
                 active_sessions=active_sessions,
+                just_ended=just_ended,
                 open_rows=open_rows,
                 recent_events=recent_events,
                 target_visibility=vis_level,
@@ -386,21 +401,29 @@ class ViewProjector:
         *,
         branch_id: str,
         active_sessions: Sequence[CheckoutSessionRow],
+        just_ended: Sequence[Tuple[CheckoutSessionRow, Optional[EpisodeRow]]] = (),
         open_rows: Sequence[DailyChronicleRow],
         recent_events: Sequence[object],
         target_visibility: str,
         known_external_ids: Sequence[str],
     ) -> str:
-        """渲染面向请求尾部的动态现况与未封存最近动态。"""
+        """渲染面向请求尾部的实时动态（含在播态、4 小时内刚下播态与高信号近期事件）。"""
         parts: List[str] = []
 
         other_active = [s for s in active_sessions if s.branch_id != branch_id]
         if other_active:
             for sess in other_active:
                 plat = sess.platform or "直播平台"
-                title_part = f"《{sess.title}》" if sess.title else ""
+                title_part = f"《{sanitize_for_model(sess.title, known_external_ids)}》" if sess.title else ""
                 seg_part = f"，当前环节：{sess.segment_title}" if sess.segment_title else ""
                 parts.append(f"你此刻正在{plat}开直播（你自己是主播）{title_part}{seg_part}。")
+        elif just_ended:
+            for sess, ep in just_ended:
+                plat = sess.platform or "直播平台"
+                title_part = f"《{sanitize_for_model(sess.title, known_external_ids)}》" if sess.title else ""
+                ov_text = sanitize_for_model(ep.overview, known_external_ids)[:240] if (ep and ep.overview) else ""
+                ov_part = f"本场概览：{ov_text}" if ov_text else ""
+                parts.append(f"你刚刚结束了{plat}直播{title_part}。{ov_part}".strip())
 
         open_lines: List[str] = []
         for row in open_rows:
@@ -410,8 +433,10 @@ class ViewProjector:
             label = SLOT_LABELS.get(row.slot_key, "刚才")
             open_lines.append(f"- {label}进行中：{sanitize_for_model(body, known_external_ids)}")
 
-        if not open_lines and recent_events:
-            for ev in recent_events[:3]:
+        # 优先过滤空壳游戏互动，仅展示真正高信号的近期动态
+        signal_events = [ev for ev in recent_events if not is_hollow_interaction(ev)]  # type: ignore[arg-type]
+        if not open_lines and signal_events:
+            for ev in signal_events[:4]:
                 where = describe_visibility_scope(ev.visibility, branch_id=ev.branch_id)  # type: ignore[attr-defined]
                 clean = sanitize_for_model(ev.summary, known_external_ids)  # type: ignore[attr-defined]
                 open_lines.append(f"- 近期在{where}：{clean}")
@@ -424,21 +449,25 @@ class ViewProjector:
         self,
         *,
         query: str,
-        days: int = 7,
+        days: int = 30,
         limit: int = 5,
         target_visibility: str = "public",
+        exclude_branch: Optional[str] = None,
+        high_confidence_only: bool = False,
     ) -> str:
-        """混合检索跨端经历、温层主线与锚点，优先委派双路 HybridRecallService，否则走纯 SQLite 检索。"""
+        """混合检索跨端原件书库、实体关系、持续主线与观点约定。"""
         if self._retrieval is not None:
             return await self._retrieval.recall(
                 query=query,
                 days=days,
                 limit=limit,
                 target_visibility=target_visibility,
+                exclude_branch=exclude_branch,
+                high_confidence_only=high_confidence_only,
             )
         vis_level = normalize_visibility(target_visibility, default="public")
         vis_allowed = allowed_visibilities(vis_level)
-        since_ms = int(self._clock_ms()) - max(1, int(days)) * 24 * 3600 * 1000
+        since_ms = 0 if int(days) <= 0 else int(self._clock_ms()) - int(days) * 24 * 3600 * 1000
 
         def _op(conn: sqlite3.Connection) -> str:
             all_ext_ids = [item.external_id for item in self._persons.list_all_identities(conn)]
@@ -450,14 +479,36 @@ class ViewProjector:
                 clean_c = sanitize_for_model(anc.content, all_ext_ids)
                 lines.append(f"[锚点#{anc.id}·{status_word}] {clean_c}（出自{_branch_label(anc.branch_id)}）")
             for ev in ev_hits:
-                if ev.kind == "forget_request":
+                if ev.kind == "forget_request" or is_hollow_interaction(ev):
                     continue
                 where = describe_visibility_scope(ev.visibility, branch_id=ev.branch_id)
                 clean_s = sanitize_for_model(ev.summary, all_ext_ids)
                 quote = f" 原话：「{sanitize_for_model(ev.verbatim, all_ext_ids)}」" if ev.verbatim else ""
                 lines.append(f"[经历·{where}] {clean_s}{quote}")
             if not lines:
-                return f"最近 {days} 天里没有找到与「{query}」相关的跨端记录。"
+                return "" if high_confidence_only else f"最近 {days} 天里没有找到与「{query}」相关的跨端记录。"
             return "\n".join(lines[: max(1, int(limit))])
 
         return await self._db.run(_op)
+
+    async def recall_life_structured(
+        self,
+        *,
+        query: str,
+        days: int = 30,
+        limit: int = 5,
+        target_visibility: str = "public",
+        exclude_branch: Optional[str] = None,
+        high_confidence_only: bool = False,
+    ) -> Optional[RecallResult]:
+        """返回带强命中判定的结构化召回结果（供高置信度自动预召回使用）。"""
+        if self._retrieval is None:
+            return None
+        return await self._retrieval.recall_structured(
+            query=query,
+            days=days,
+            limit=limit,
+            target_visibility=target_visibility,
+            exclude_branch=exclude_branch,
+            high_confidence_only=high_confidence_only,
+        )

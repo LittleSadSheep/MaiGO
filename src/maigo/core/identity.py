@@ -24,7 +24,7 @@ from maigo.core.models import (
 from maigo.core.privacy import allowed_visibilities, describe_visibility_scope, sanitize_for_model
 from maigo.runtime import ClockMs, get_logger, now_ms
 from maigo.storage.db import MaiGODatabase
-from maigo.storage.repos import ExperienceEventRepo, PersonRepo
+from maigo.storage.repos import ExperienceEventRepo, KnowledgeGraphRepo, PersonRepo
 
 logger = get_logger("services.identity")
 
@@ -78,6 +78,7 @@ class IdentityService:
         self._clock_ms = clock_ms
         self._persons = PersonRepo(clock_ms=clock_ms)
         self._events = ExperienceEventRepo(clock_ms=clock_ms)
+        self._knowledge = KnowledgeGraphRepo(clock_ms=clock_ms)
 
     def hash_identity(self, platform: str, external_id: str) -> str:
         """计算外部账号的不可逆加盐摘要，用于遗忘名单匹配。"""
@@ -312,6 +313,7 @@ class IdentityService:
             cleared_interactions = 0
             if ident is not None:
                 cleared_interactions = self._persons.clear_interactions_for_person(conn, ident.person_id)
+                self._knowledge.clear_relations_for_person(conn, ident.person_id)
                 if wipe_person:
                     self._persons.delete_person(conn, ident.person_id)
                 else:
@@ -434,13 +436,23 @@ class IdentityService:
         identities = self._persons.list_identities_for_person(conn, person.id)
         platforms = list(dict.fromkeys(item.platform for item in identities))
         interactions = self._persons.list_interactions(conn, person_id=person.id, visibilities=vis_allowed, limit=limit)
-        # 严格只写自然语言互动描述与公共备注，绝不透出外部数字账号与未公开马甲清单
+        relations = self._knowledge.list_relations_for_person(
+            conn, person_id=person.id, visibilities=vis_allowed, limit=limit
+        )
+        # 严格只写自然语言互动描述、实体关系事实与公共备注，绝不透出外部数字账号与未公开马甲清单
         extra_ids = [*all_external_ids]
         parts: List[str] = []
+        seen_fragments: set[str] = set()
+        for rel in relations:
+            clean_fact = sanitize_for_model(rel.fact_text, extra_ids).strip()
+            if clean_fact and clean_fact not in seen_fragments:
+                seen_fragments.add(clean_fact)
+                parts.append(clean_fact)
         for item in interactions:
             scope_word = describe_visibility_scope(item.visibility, branch_id=item.branch_id)
-            clean_summary = sanitize_for_model(item.summary, extra_ids)
-            if clean_summary:
+            clean_summary = sanitize_for_model(item.summary, extra_ids).strip()
+            if clean_summary and clean_summary not in seen_fragments:
+                seen_fragments.add(clean_summary)
                 parts.append(f"曾在{scope_word}{clean_summary}")
         if person.notes and ("private" in vis_allowed or person.visibility_tier in vis_allowed):
             clean_note = sanitize_for_model(person.notes, extra_ids)

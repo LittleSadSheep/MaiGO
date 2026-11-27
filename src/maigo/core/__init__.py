@@ -37,6 +37,8 @@ from maigo.core.recall import (
     EmbeddingClient,
     HybridRecallService,
     OpenAIEmbeddingClient,
+    RecallHit,
+    RecallResult,
 )
 
 __all__ = [
@@ -54,6 +56,8 @@ __all__ = [
     "OpenAIEmbeddingClient",
     "PersonDirectoryEntry",
     "PersonWithIdentities",
+    "RecallHit",
+    "RecallResult",
     "SLOT_LABELS",
     "SlotSynthesisDraft",
     "SynthesisLLMClient",

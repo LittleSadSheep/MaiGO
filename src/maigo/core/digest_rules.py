@@ -33,6 +33,46 @@ _MOOD_RULES: Tuple[Tuple[Tuple[str, ...], str], ...] = (
     (("好笑", "哈哈", "呆呆", "有趣", "可爱", "搞笑"), "轻松惬意"),
     (("热闹", "讨论", "聊到", "约定", "直播"), "兴致不错"),
 )
+_HOLLOW_INTERACTION_RE = re.compile(r"发生游戏互动（(?:greet|gift|spar|helped|together|interaction)）")
+_KIND_PRIORITY = {
+    "milestone": 0,
+    "promise_update": 1,
+    "browsed": 2,
+    "speech": 3,
+    "interaction": 4,
+}
+
+
+def is_hollow_interaction(ev: ExperienceEventRow) -> bool:
+    """判断是否为无具体剧情细节的空壳游戏互动（如纯 greet/gift），防止其淹没主时间线。"""
+    if ev.kind != "interaction":
+        return False
+    if ev.verbatim.strip() or ev.reaction.strip():
+        return False
+    return bool(_HOLLOW_INTERACTION_RE.search(ev.summary))
+
+
+def prioritize_slot_events(
+    events: Sequence[ExperienceEventRow],
+    *,
+    max_events: int = 40,
+) -> List[ExperienceEventRow]:
+    """整理前先剥离空壳游戏互动并按信息价值分层截断，避免长时段撑爆外部整理模型超时。"""
+    non_hollow = [ev for ev in events if not is_hollow_interaction(ev)]
+    pool = non_hollow if non_hollow else list(events[:5])
+    if len(pool) <= max_events:
+        return sorted(pool, key=lambda ev: (ev.occurred_at_ms, ev.id))
+    # 优先保住场次总览、高光里程碑与公开承诺，再按最新顺序保留余量，最后恢复时间正序
+    ranked = sorted(
+        pool,
+        key=lambda ev: (
+            0 if ev.metadata.get("session_overview") or ev.metadata.get("highlight") else 1,
+            _KIND_PRIORITY.get(ev.kind, 9),
+            -ev.occurred_at_ms,
+        ),
+    )
+    selected = ranked[:max_events]
+    return sorted(selected, key=lambda ev: (ev.occurred_at_ms, ev.id))
 
 
 @dataclass(frozen=True)
@@ -304,7 +344,9 @@ def build_rule_draft(
     arcs: List[ArcCandidate] = []
     unfinished_thread = ""
 
-    for ev in events:
+    # 规则拼接前先剔除空壳游戏互动噪音，避免 10 条 greet/gift 把真正的主线剧情挤到截断区外
+    focused_events = prioritize_slot_events(events, max_events=30)
+    for ev in focused_events:
         where = describe_visibility_scope(ev.visibility, branch_id=ev.branch_id)
         base = sanitize_for_model(ev.summary.strip(), known_external_ids)
         if ev.reaction.strip():

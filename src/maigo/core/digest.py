@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from maigo.config import SynthesizerConfig
+from datetime import datetime, timedelta, timezone
 from maigo.core.digest_rules import (
     AnchorCandidate,
     OpenAISynthesisClient,
@@ -17,6 +18,7 @@ from maigo.core.digest_rules import (
     build_rule_draft,
     compress_yesterday,
     compute_day_and_slot,
+    prioritize_slot_events,
     slot_rank,
 )
 from maigo.core.identity import IdentityService
@@ -161,8 +163,10 @@ class ChronicleSynthesizer:
             valid_events = await self._filter_forgotten_events(slot_events)
 
             draft = await self._draft_slot(day_key=day_key, slot_key=slot_key, valid_events=valid_events)
+            draft_source = "llm"
             if draft is None:
                 draft = build_rule_draft(valid_events, known_external_ids=known_external_ids)
+                draft_source = "rule"
 
             if valid_events:
                 await self._save_slot(
@@ -172,6 +176,7 @@ class ChronicleSynthesizer:
                     draft=draft,
                     source_event_ids=[ev.id for ev in slot_events],
                     known_external_ids=known_external_ids,
+                    draft_source=draft_source,
                 )
                 touched_slots += 1
                 if target_status == "sealed":
@@ -239,6 +244,8 @@ class ChronicleSynthesizer:
     ) -> Optional[SlotSynthesisDraft]:
         if self._llm is None or not valid_events:
             return None
+        # 送入外部模型前先降噪并限定条数，降低长时段整理超时概率
+        focused = prioritize_slot_events(valid_events, max_events=40)
         with_ctx = getattr(self._llm, "summarize_slot_with_context", None)
         if callable(with_ctx):
             stances, arcs = await self._db.run(
@@ -250,12 +257,12 @@ class ChronicleSynthesizer:
             return await with_ctx(
                 day_key=day_key,
                 slot_key=slot_key,
-                events=valid_events,
+                events=focused,
                 existing_stances=stances,
                 existing_arcs=arcs,
                 persona_name=self._config.persona_name,
             )
-        return await self._llm.summarize_slot(day_key=day_key, slot_key=slot_key, events=valid_events)
+        return await self._llm.summarize_slot(day_key=day_key, slot_key=slot_key, events=focused)
 
     async def _maybe_run_daily_backup(self, current_day: str) -> None:
         if self._maintenance is None or not self._auto_daily_backup:
@@ -267,21 +274,60 @@ class ChronicleSynthesizer:
             logger.warning(f"每日自动热备份失败（跳过本次）: {exc}")
 
     async def run_idle_maintenance(self) -> None:
-        """无未处理事件时的后台例行维护：跨日封存、约定过期、温和 WAL 收拢与每日热备份。"""
+        """无未处理事件时的后台例行维护：补写规则回落时段、跨日封存、约定过期、WAL 收拢与每日热备份。"""
         now = int(self._clock_ms())
         current_day, _ = compute_day_and_slot(
             now, day_rollover_hour=self._rollover_hour, timezone_offset_hours=self._tz_offset
         )
         stale_before = now - max(1, int(self._config.stale_promise_days)) * 24 * 3600 * 1000
 
+        # 空闲期优先用外部模型补写近 7 天内因超时退回规则拼接的时段（每次最多 2 段，防长阻塞）
+        if self._llm is not None:
+            await self._retry_rule_fallback_slots(now=now, current_day=current_day, limit=2)
+
         def _maintain(conn: sqlite3.Connection) -> None:
             self._handle_day_rollover_sync(conn, current_day=current_day)
             self._anchors.mark_stale_promises(conn, before_ms=stale_before)
-            # 在仅接收低写入心态心跳的空闲期定期做非阻塞 checkpoint，避免 WAL 持续膨胀
+            # 在仅接收低写入心跳的空闲期定期做非阻塞 checkpoint，避免 WAL 持续膨胀
             conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
 
         await self._db.run(_maintain)
         await self._maybe_run_daily_backup(current_day)
+
+    async def _retry_rule_fallback_slots(self, *, now: int, current_day: str, limit: int = 2) -> int:
+        """将此前因模型超时降级为 rule 的近期时段重新用 LLM 润色重写，解除永久锁死。"""
+        tz = timezone(timedelta(hours=self._tz_offset))
+        since_day = (datetime.fromtimestamp(now / 1000.0, tz=tz) - timedelta(days=7)).strftime("%Y-%m-%d")
+        fallback_slots = await self._db.run(
+            lambda c: self._chronicle.list_rule_fallback_slots(c, since_day_key=since_day, limit=limit)
+        )
+        if not fallback_slots:
+            return 0
+        known_external_ids = await self._db.run(
+            lambda c: [item.external_id for item in self._identity._persons.list_all_identities(c)]
+        )
+        rewritten = 0
+        for slot in fallback_slots:
+            slot_events = await self._load_combined_slot_events(slot, ())
+            valid_events = await self._filter_forgotten_events(slot_events)
+            if not valid_events:
+                continue
+            draft = await self._draft_slot(day_key=slot.day_key, slot_key=slot.slot_key, valid_events=valid_events)
+            if draft is None:
+                continue
+            await self._save_slot(
+                day_key=slot.day_key,
+                slot_key=slot.slot_key,
+                status=slot.status,
+                draft=draft,
+                source_event_ids=[ev.id for ev in slot_events],
+                known_external_ids=known_external_ids,
+                draft_source="llm",
+            )
+            rewritten += 1
+        if rewritten > 0:
+            await self._db.run(lambda c: self._handle_day_rollover_sync(c, current_day=current_day))
+        return rewritten
 
     async def _load_slot(self, *, day_key: str, slot_key: str) -> Optional[DailyChronicleRow]:
         def _op(conn: sqlite3.Connection) -> Optional[DailyChronicleRow]:
@@ -298,6 +344,7 @@ class ChronicleSynthesizer:
         draft: SlotSynthesisDraft,
         source_event_ids: Sequence[int],
         known_external_ids: Sequence[str],
+        draft_source: str = "llm",
     ) -> None:
         def _op(conn: sqlite3.Connection) -> None:
             self._chronicle.upsert_slot(
@@ -311,6 +358,7 @@ class ChronicleSynthesizer:
                 source_event_ids=source_event_ids,
                 mood_tag=sanitize_for_model(draft.mood_tag, known_external_ids)[:24],
                 unfinished_thread=sanitize_for_model(draft.unfinished_thread, known_external_ids)[:100],
+                draft_source=draft_source,
             )
 
         await self._db.run(_op)
@@ -591,6 +639,7 @@ class ChronicleSynthesizer:
             source_event_ids=slot.source_event_ids,
             mood_tag=slot.mood_tag,
             unfinished_thread=slot.unfinished_thread,
+            draft_source=slot.draft_source,
         )
 
     def _handle_day_rollover_sync(self, conn: sqlite3.Connection, *, current_day: str) -> None:
